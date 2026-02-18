@@ -1,0 +1,530 @@
+# Mental Health AI Platform - RESEARCH FOCUSED
+## BSc Research Project Plan (10-12 Weeks)
+
+---
+
+## 📋 RESEARCH OBJECTIVES
+
+This is a **research prototype** to demonstrate:
+1. **AI-based mental health conversation analysis**
+2. **Automated clinical assessment delivery**
+3. **Anomaly detection in linguistic patterns**
+4. **Early warning system for mental health concerns**
+
+**Focus:** Prove the concept works, validate the algorithms, demonstrate research contribution
+
+**NOT focusing on:** Production-ready UI, scalability, enterprise features
+
+---
+
+## 🎓 RESEARCH VALUE vs INDUSTRIAL VALUE
+
+### ✅ KEEPING (Research Core):
+- AI conversation analysis
+- Clinical assessment automation (PHQ-9, GAD-7)
+- **Anomaly detection algorithms** ← Main research contribution
+- **Pattern recognition in text** ← Research novelty
+- Baseline vs deviation detection
+- Early warning system logic
+- Data collection for analysis
+- Algorithm validation
+
+### ❌ REMOVING (Industrial Fluff):
+- Fancy dashboards with charts
+- Beautiful UI/UX design
+- Mobile responsiveness
+- Dark mode
+- User profiles
+- Data export features
+- Multiple deployment options
+- Load testing
+- Advanced error handling
+- Professional documentation
+- Marketing/landing pages
+
+---
+
+## 🔬 CORE RESEARCH COMPONENTS
+
+### 1. **Conversational AI System**
+- Natural language interaction
+- Context-aware responses
+- Mental health domain-specific model
+
+### 2. **Clinical Assessment Automation**
+- PHQ-9 (Depression) - Conversational format
+- GAD-7 (Anxiety) - Conversational format
+- Automated scoring algorithms
+- **Research Question:** Can conversational assessments work as well as traditional forms?
+
+### 3. **Anomaly Detection Engine** ⭐ (Main Research Contribution)
+- Linguistic pattern extraction
+- Baseline profile creation
+- Deviation detection algorithms
+- Alert triggering system
+- **Research Question:** Can we detect mental health changes through text analysis?
+
+### 4. **Pattern Analysis**
+- Sentiment analysis
+- Word usage patterns
+- Coherence metrics
+- Behavioral indicators
+- **Research Question:** What linguistic markers indicate mental health concerns?
+
+---
+
+## 📅 RESEARCH-FOCUSED SPRINTS (10-12 WEEKS)
+
+### **Sprint 1 (Week 1-2): Basic Infrastructure**
+
+**Goal:** Get minimal working system for data collection
+
+**Tasks:**
+1. Set up simple React frontend (basic UI is fine)
+2. Set up FastAPI backend
+3. Set up Supabase
+4. Basic user registration/login (simple, no fancy validation)
+5. Simple chat interface (functional, not pretty)
+6. Store conversations in database
+7. Deploy somewhere (doesn't matter where, just accessible)
+
+**Deliverable:** Working chat that stores data for research
+
+---
+
+### **Sprint 2 (Week 3-4): AI Integration**
+
+**Goal:** Get AI responding to messages
+
+**Tasks:**
+1. Research mental health-specific Hugging Face models
+2. Download and test models (mental-bert, MentalRoBERTa)
+3. Compare model performance on mental health topics
+4. Implement chosen model
+5. Add context window (last 5-10 messages)
+6. Test response quality
+7. **Document model selection rationale** ← Research documentation
+
+**Deliverable:** AI chat working + Model selection justification document
+
+---
+
+### **Sprint 3 (Week 5-6): Clinical Assessments**
+
+**Goal:** Automated PHQ-9 and GAD-7 delivery
+
+**Tasks:**
+1. Implement PHQ-9 conversational flow
+2. Implement GAD-7 conversational flow
+3. Build scoring algorithms
+4. Store assessment results
+5. Simple results page (score + severity)
+6. **Test validity:** Compare conversational vs traditional format
+7. **Collect data:** Run with 10-20 test participants
+
+**Deliverable:** Working assessments + Preliminary validation data
+
+---
+
+### **Sprint 4 (Week 7-8): Anomaly Detection ⭐ (CORE RESEARCH)**
+
+**Goal:** Implement and test anomaly detection algorithms
+
+**Tasks:**
+1. Install NLP libraries (spaCy, NLTK)
+2. Implement linguistic feature extraction:
+   - Sentiment scores
+   - Word frequency patterns
+   - Sentence coherence
+   - Response length patterns
+   - Emotional vocabulary usage
+3. Create baseline profile algorithm:
+   - First 5-10 conversations = baseline
+   - Calculate normal ranges for each feature
+4. Implement deviation detection:
+   - Compare current conversation to baseline
+   - Calculate anomaly scores
+   - Set thresholds for alerts
+5. Test with simulated data (normal vs concerning patterns)
+6. **Document algorithm design** ← Research contribution
+7. **Run initial validation tests**
+
+**Deliverable:** Working anomaly detection + Algorithm documentation
+
+---
+
+### **Sprint 5 (Week 9-10): Validation & Testing**
+
+**Goal:** Validate research hypotheses
+
+**Tasks:**
+1. Create test datasets:
+   - Normal conversations
+   - Conversations with concerning patterns
+   - Conversations from assessment results
+2. Test anomaly detection accuracy:
+   - True positives
+   - False positives
+   - True negatives
+   - False negatives
+3. Calculate metrics (precision, recall, F1-score)
+4. Test assessment automation accuracy
+5. Compare AI responses to human mental health professional responses
+6. **Collect quantitative results**
+7. **Run statistical analysis**
+
+**Deliverable:** Research results + Statistical analysis
+
+---
+
+### **Sprint 6 (Week 11-12): Documentation & Thesis**
+
+**Goal:** Write research documentation
+
+**Tasks:**
+1. Write methodology section
+2. Document algorithms in detail
+3. Present validation results
+4. Create diagrams of system architecture
+5. Write discussion of findings
+6. Document limitations
+7. Suggest future research directions
+8. Create demonstration video
+9. Prepare presentation slides
+10. Write abstract
+
+**Deliverable:** Research paper/thesis draft + Presentation
+
+---
+
+## 🔬 RESEARCH METHODOLOGY
+
+### Data Collection
+- Collect conversations from volunteer participants
+- Minimum 20-30 conversations per user for baseline
+- Mix of users with/without mental health concerns (self-reported)
+- Ethical approval and consent required
+
+### Algorithm Development
+1. **Feature Extraction:** Extract linguistic markers from text
+2. **Baseline Creation:** Establish normal patterns per user
+3. **Anomaly Detection:** Flag deviations from baseline
+4. **Validation:** Test against known cases
+
+### Evaluation Metrics
+- **Anomaly Detection:**
+  - Precision: Of flagged cases, how many were actually concerning?
+  - Recall: Of actual concerning cases, how many did we catch?
+  - F1-Score: Harmonic mean of precision and recall
+  
+- **Assessment Automation:**
+  - Correlation with traditional PHQ-9/GAD-7
+  - User preference: conversational vs form-based
+  - Completion rates
+
+---
+
+## 🛠️ SIMPLIFIED TECH STACK
+
+### Frontend (Minimal)
+- React (basic components, no fancy styling)
+- Simple forms and buttons
+- Basic CSS (functional, not beautiful)
+
+### Backend (Research Focus)
+- Python + FastAPI
+- MongoDB (data storage)
+- JWT (basic auth)
+
+### AI/ML (Core Research)
+- **Hugging Face Transformers** - Pre-trained models
+- **spaCy** - NLP feature extraction
+- **NLTK** - Text analysis
+- **scikit-learn** - Anomaly detection algorithms
+- **pandas** - Data analysis
+- **numpy** - Numerical computations
+
+### Analysis Tools
+- Jupyter Notebooks for testing algorithms
+- matplotlib/seaborn for visualizations (for thesis)
+- scipy for statistical tests
+
+---
+
+## 📊 RESEARCH DELIVERABLES
+
+### 1. Working Prototype
+- Functional chat system
+- Clinical assessments
+- Anomaly detection engine
+- Basic UI (functional is enough)
+
+### 2. Research Documentation
+- **Literature Review:** Existing mental health AI systems
+- **Methodology:** How your system works
+- **Algorithm Design:** Detailed explanation of anomaly detection
+- **Validation Results:** Accuracy, precision, recall
+- **Discussion:** What worked, what didn't, why
+
+### 3. Code Repository
+- Clean code with comments
+- README explaining how to run
+- Requirements.txt
+- Database schema documentation
+
+### 4. Thesis/Paper Sections
+- Abstract
+- Introduction
+- Literature Review
+- Methodology
+- Results
+- Discussion
+- Conclusion
+- References
+
+### 5. Presentation
+- Problem statement
+- Your solution
+- How it works (system architecture)
+- Anomaly detection algorithm
+- Results and validation
+- Demo video
+- Future work
+
+---
+
+## 🎯 RESEARCH QUESTIONS TO ANSWER
+
+1. **Can AI conduct clinical assessments conversationally?**
+   - Compare conversational PHQ-9/GAD-7 to traditional format
+   - Measure completion rates and user preference
+
+2. **Can linguistic analysis detect mental health concerns?**
+   - What patterns indicate depression/anxiety?
+   - How accurate is baseline deviation detection?
+
+3. **What features are most predictive?**
+   - Sentiment? Word choice? Coherence?
+   - Which linguistic markers matter most?
+
+4. **How early can we detect changes?**
+   - How many conversations needed for baseline?
+   - How quickly can we detect deviations?
+
+---
+
+## 💡 ANOMALY DETECTION ALGORITHM (Research Core)
+
+### Step 1: Feature Extraction
+From each conversation, extract:
+```python
+features = {
+    'sentiment_score': float,        # -1 to 1
+    'negative_word_ratio': float,    # 0 to 1
+    'avg_sentence_length': float,    # words per sentence
+    'coherence_score': float,        # 0 to 1
+    'response_time_avg': float,      # seconds
+    'emotional_intensity': float,    # 0 to 1
+    'topic_focus': float,            # 0 to 1
+}
+```
+
+### Step 2: Baseline Creation
+After N conversations (e.g., 5-10):
+```python
+baseline = {
+    'sentiment_mean': mean(sentiment_scores),
+    'sentiment_std': std(sentiment_scores),
+    # ... for each feature
+}
+```
+
+### Step 3: Anomaly Detection
+For new conversation:
+```python
+anomaly_score = 0
+for feature in features:
+    z_score = (current_value - baseline_mean) / baseline_std
+    if abs(z_score) > threshold:  # e.g., 2 standard deviations
+        anomaly_score += abs(z_score)
+        
+if anomaly_score > alert_threshold:
+    trigger_alert()
+```
+
+### Step 4: Validation
+- Test with known cases
+- Calculate precision/recall
+- Optimize thresholds
+- Document performance
+
+---
+
+## 📁 SIMPLIFIED STRUCTURE
+
+```
+mental-health-research/
+├── frontend/                   # Simple UI
+│   ├── src/
+│   │   ├── Chat.jsx           # Basic chat interface
+│   │   ├── Assessment.jsx     # Assessment questions
+│   │   └── Results.jsx        # Simple results
+│
+├── backend/
+│   ├── models/                # Database schemas
+│   ├── routes/                # API endpoints
+│   ├── ai/
+│   │   ├── model.py          # AI model loading
+│   │   └── inference.py      # Generate responses
+│   ├── analysis/              # 🔬 RESEARCH CORE
+│   │   ├── feature_extraction.py
+│   │   ├── baseline.py
+│   │   ├── anomaly_detection.py
+│   │   └── validation.py
+│   └── assessments/
+│       ├── phq9.py
+│       └── gad7.py
+│
+├── research/                   # 🎓 RESEARCH MATERIALS
+│   ├── notebooks/             # Jupyter notebooks for analysis
+│   ├── data/                  # Test datasets
+│   ├── results/               # Validation results
+│   └── documentation/         # Algorithm documentation
+│
+├── thesis/                     # 📝 WRITTEN WORK
+│   ├── chapters/
+│   ├── figures/
+│   └── references.bib
+│
+└── README.md
+```
+
+---
+
+## ⚠️ ETHICAL CONSIDERATIONS (Important for BSc)
+
+### Required for Research Project:
+1. **Ethics Approval:** Get approval from university ethics committee
+2. **Informed Consent:** Participants must consent to data collection
+3. **Anonymization:** Remove identifying information
+4. **Clear Disclaimers:** Not for clinical diagnosis
+5. **Data Privacy:** Secure storage, limited access
+6. **Participant Safety:** Crisis resources available
+
+### Add to Your Thesis:
+- Ethics approval documentation
+- Consent form templates
+- Data privacy measures
+- Limitations and disclaimers
+
+---
+
+## ✅ BSc PROJECT SUCCESS CRITERIA
+
+By the end, you must have:
+
+### Technical Deliverables:
+✅ Working prototype (basic UI is fine)  
+✅ AI chat system functional  
+✅ Automated clinical assessments  
+✅ **Anomaly detection algorithm implemented**  
+✅ **Validation testing completed**  
+✅ Code in GitHub with documentation  
+
+### Research Deliverables:
+✅ **Literature review on mental health AI**  
+✅ **Novel anomaly detection algorithm**  
+✅ **Validation results with metrics**  
+✅ **Statistical analysis of results**  
+✅ **Discussion of findings**  
+✅ **Thesis/research paper draft**  
+✅ **Presentation ready**  
+
+### Academic Contribution:
+✅ **Original research question**  
+✅ **Novel approach to problem**  
+✅ **Validated results**  
+✅ **Discussion of implications**  
+✅ **Future research directions**  
+
+---
+
+## 🎓 WHAT MAKES THIS RESEARCH-WORTHY?
+
+### Novel Contributions:
+1. **Conversational assessment automation** - Not just forms
+2. **Personalized baseline detection** - Per-user patterns
+3. **Multi-feature anomaly detection** - Combining multiple linguistic markers
+4. **Early warning system** - Proactive rather than reactive
+
+### Research Value:
+- Tests hypothesis about AI-based screening
+- Validates new anomaly detection approach
+- Provides data on conversational assessments
+- Identifies predictive linguistic features
+
+### Academic Impact:
+- Publishable results
+- Addresses real-world problem
+- Demonstrates technical competency
+- Shows research methodology
+
+---
+
+## 🚀 GETTING STARTED (Week 1)
+
+### Day 1: Setup
+- Create GitHub repo
+- Set up Python + React environments
+- Install ML libraries
+
+### Day 2-3: Literature Review
+- Read papers on mental health AI
+- Research existing anomaly detection methods
+- Find gaps your project fills
+
+### Day 4-5: Basic Chat
+- Get simple chat working
+- Start collecting test conversations
+
+### Week 2: AI Integration
+- Test different models
+- Document model comparison
+
+---
+
+## 📚 KEY RESEARCH PAPERS TO READ
+
+1. Mental health monitoring using AI
+2. Anomaly detection in text data
+3. PHQ-9 and GAD-7 validation studies
+4. NLP for mental health assessment
+5. Conversational agents in healthcare
+
+---
+
+## 🎉 FINAL FOCUS
+
+**You're building a RESEARCH PROJECT, not a commercial product.**
+
+Your thesis committee cares about:
+- ✅ Novel algorithm design
+- ✅ Research methodology
+- ✅ Validation results
+- ✅ Statistical analysis
+- ✅ Discussion of findings
+
+They DON'T care about:
+- ❌ Pretty UI
+- ❌ Perfect UX
+- ❌ Mobile optimization
+- ❌ Production deployment
+- ❌ Marketing materials
+
+**Focus on the science, not the polish.**
+
+---
+
+*Research-Focused Version: 1.0*  
+*BSc Project - 10-12 Weeks*  
+*Emphasis: Research Value over Industrial Value*
