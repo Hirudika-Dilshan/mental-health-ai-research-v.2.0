@@ -1,21 +1,29 @@
-// frontend/src/App.jsx
-// If you don't have react-router-dom yet: npm install react-router-dom
-
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import ProtectedRoute from "./components/ProtectedRoute";
+import { AuthProvider } from "./context/AuthContext";
+import Dashboard from "./pages/Dashboard";
+import Login from "./pages/Login";
 import SignUp from "./pages/SignUp";
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* Default route → signup */}
-        <Route path="/"       element={<Navigate to="/signup" replace />} />
-        <Route path="/signup" element={<SignUp />} />
-
-        {/* Placeholder: add Login, Dashboard etc. here later */}
-        {/* <Route path="/login"     element={<Login />} /> */}
-        {/* <Route path="/dashboard" element={<Dashboard />} /> */}
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/signup" element={<SignUp />} />
+          <Route path="/login" element={<Login />} />
+          <Route
+            path="/dashboard"
+            element={(
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            )}
+          />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   );
 }
