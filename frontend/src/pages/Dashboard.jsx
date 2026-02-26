@@ -1,12 +1,53 @@
-// frontend/src/pages/Dashboard.jsx
-// Protected page — only accessible when logged in
-
+import { useMemo } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
-import { useNavigate } from "react-router-dom";
+import "./Dashboard.css";
+
+const actions = [
+  {
+    title: "Self Anxiety Test",
+    description: "A short anxiety check-in to understand your current stress level.",
+    to: "/anxiety-test",
+    duration: "2-4 min",
+    cta: "Start Anxiety Test",
+  },
+  {
+    title: "Depression Test",
+    description: "A guided mood screening based on common research assessment items.",
+    to: "/depression-test",
+    duration: "3-5 min",
+    cta: "Start Depression Test",
+  },
+  {
+    title: "General Chat",
+    description: "Talk freely about your day, feelings, or concerns in a supportive space.",
+    to: "/general-chat",
+    duration: "Always available",
+    cta: "Open Chat",
+  },
+];
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
-  const navigate         = useNavigate();
+  const navigate = useNavigate();
+
+  const initials = useMemo(() => {
+    const name = user?.name?.trim();
+    if (name) {
+      return name
+        .split(" ")
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase())
+        .join("");
+    }
+    return user?.email?.slice(0, 2).toUpperCase() || "U";
+  }, [user?.name, user?.email]);
+
+  const firstName = useMemo(() => {
+    const name = user?.name?.trim();
+    return name ? name.split(" ")[0] : "there";
+  }, [user?.name]);
 
   const handleLogout = () => {
     logout();
@@ -14,31 +55,42 @@ export default function Dashboard() {
   };
 
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.card}>
-        {/* Header */}
-        <div style={styles.header}>
+    <div className="dashboard-page">
+      <div className="dashboard-shell">
+        <header className="dashboard-header">
           <div>
-            <h1 style={styles.title}>
-              👋 Hello, {user?.name || user?.email}!
-            </h1>
-            <p style={styles.subtitle}>You're successfully logged in.</p>
+            <h1>Hello, {firstName}</h1>
+            <p>What would you like to do right now?</p>
           </div>
-          <button onClick={handleLogout} style={styles.logoutBtn}>
+          <button onClick={handleLogout} className="logout-btn">
             Log out
           </button>
-        </div>
+        </header>
 
-        {/* User info */}
-        <div style={styles.infoBox}>
-          <InfoRow label="Email"   value={user?.email} />
-          <InfoRow label="Name"    value={user?.name || "—"} />
-          <InfoRow label="User ID" value={user?.user_id} mono />
-        </div>
-
-        <p style={{ color: "#94a3b8", fontSize: 13, marginTop: 20 }}>
-          Your access token is stored in sessionStorage and will be cleared when you close the tab.
+        <p className="dashboard-tip">
+          Recommended first step: If you are unsure, start with <strong>General Chat</strong>.
         </p>
+
+        <div className="dashboard-layout">
+          <section className="actions-panel" aria-label="Primary actions">
+            {actions.map((item) => (
+              <Link key={item.to} to={item.to} className="action-card">
+                <p className="action-time">{item.duration}</p>
+                <h2>{item.title}</h2>
+                <p className="action-desc">{item.description}</p>
+                <span className="action-btn">{item.cta}</span>
+              </Link>
+            ))}
+          </section>
+
+          <aside className="profile-panel" aria-label="Profile">
+            <h2>Profile</h2>
+            <div className="avatar">{initials}</div>
+            <InfoRow label="Name" value={user?.name || "Not set"} />
+            <InfoRow label="Email" value={user?.email || "-"} />
+            <InfoRow label="User ID" value={user?.user_id || "-"} mono />
+          </aside>
+        </div>
       </div>
     </div>
   );
@@ -46,81 +98,9 @@ export default function Dashboard() {
 
 function InfoRow({ label, value, mono }) {
   return (
-    <div style={styles.infoRow}>
-      <span style={styles.infoLabel}>{label}</span>
-      <span style={{ ...styles.infoValue, fontFamily: mono ? "monospace" : "inherit", fontSize: mono ? 12 : 14 }}>
-        {value}
-      </span>
+    <div className="info-row">
+      <span className="info-label">{label}</span>
+      <span className={mono ? "info-value mono" : "info-value"}>{value}</span>
     </div>
   );
 }
-
-const styles = {
-  wrapper: {
-    minHeight:      "100vh",
-    display:        "flex",
-    alignItems:     "center",
-    justifyContent: "center",
-    background:     "#f1f5f9",
-    fontFamily:     "system-ui, sans-serif",
-  },
-  card: {
-    background:   "#ffffff",
-    borderRadius: 16,
-    padding:      "40px 36px",
-    width:        "100%",
-    maxWidth:     520,
-    boxShadow:    "0 4px 24px rgba(0,0,0,0.08)",
-  },
-  header: {
-    display:        "flex",
-    justifyContent: "space-between",
-    alignItems:     "flex-start",
-    marginBottom:   28,
-  },
-  title: {
-    margin:     0,
-    fontSize:   22,
-    fontWeight: 700,
-    color:      "#0f172a",
-  },
-  subtitle: {
-    margin:   "4px 0 0",
-    fontSize: 14,
-    color:    "#64748b",
-  },
-  logoutBtn: {
-    padding:      "8px 16px",
-    borderRadius: 8,
-    border:       "1.5px solid #e2e8f0",
-    background:   "#fff",
-    color:        "#64748b",
-    fontSize:     14,
-    fontWeight:   600,
-    cursor:       "pointer",
-  },
-  infoBox: {
-    background:   "#f8fafc",
-    borderRadius: 12,
-    padding:      "16px 20px",
-    display:      "flex",
-    flexDirection: "column",
-    gap:          12,
-  },
-  infoRow: {
-    display:        "flex",
-    justifyContent: "space-between",
-    alignItems:     "center",
-  },
-  infoLabel: {
-    fontSize:   13,
-    fontWeight: 600,
-    color:      "#64748b",
-    minWidth:   70,
-  },
-  infoValue: {
-    color:     "#0f172a",
-    wordBreak: "break-all",
-    textAlign: "right",
-  },
-};

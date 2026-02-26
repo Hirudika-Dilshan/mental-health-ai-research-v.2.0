@@ -1,0 +1,220 @@
+.dashboard-page {
+  min-height: 100dvh;
+  padding: 24px 14px;
+  background:
+    radial-gradient(circle at 8% 8%, #d9ebff 0%, transparent 38%),
+    radial-gradient(circle at 92% 12%, #dff8ee 0%, transparent 35%),
+    linear-gradient(160deg, #eef4ff 0%, #f5f9ff 45%, #f4fffa 100%);
+  font-family: "Segoe UI", "Trebuchet MS", "Noto Sans", sans-serif;
+}
+
+.dashboard-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #d9e6fb;
+  border-radius: 20px;
+  box-shadow: 0 18px 48px rgba(18, 46, 88, 0.14);
+  padding: 22px;
+}
+
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.dashboard-header h1 {
+  margin: 0;
+  color: #0b2d5a;
+  font-size: clamp(1.7rem, 3vw, 2.2rem);
+  line-height: 1.2;
+}
+
+.dashboard-header p {
+  margin: 6px 0 0;
+  color: #375d88;
+  font-size: 1rem;
+}
+
+.logout-btn {
+  border: 1px solid #b5cdec;
+  border-radius: 12px;
+  background: #fff;
+  color: #184a7f;
+  padding: 10px 14px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.logout-btn:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-tip {
+  margin: 14px 0 16px;
+  background: #ecf6ff;
+  border: 1px solid #d5e8fc;
+  color: #2a567f;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.92rem;
+}
+
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 14px;
+}
+
+.actions-panel {
+  background: #f6f9ff;
+  border: 1px solid #dbe7fa;
+  border-radius: 16px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.action-card {
+  text-decoration: none;
+  background: linear-gradient(170deg, #ffffff 0%, #f4f8ff 100%);
+  border: 1px solid #d5e3f9;
+  border-radius: 14px;
+  padding: 14px;
+  min-height: 196px;
+  display: flex;
+  flex-direction: column;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.action-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(22, 60, 118, 0.12);
+}
+
+.action-card:focus-visible {
+  outline: 3px solid #79aef3;
+  outline-offset: 1px;
+}
+
+.action-time {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #476a95;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.action-card h2 {
+  margin: 0;
+  color: #113762;
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+
+.action-desc {
+  margin: 10px 0 0;
+  color: #496789;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  flex-grow: 1;
+}
+
+.action-btn {
+  margin-top: 14px;
+  display: inline-block;
+  align-self: flex-start;
+  background: #0f5bc5;
+  color: #fff;
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.profile-panel {
+  background: #fff;
+  border: 1px solid #d8e5f8;
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.profile-panel h2 {
+  margin: 0;
+  color: #123b67;
+  font-size: 1.35rem;
+}
+
+.avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 999px;
+  background: linear-gradient(130deg, #2f62d8 0%, #34a89c 100%);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 10px 0 12px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid #ecf2fc;
+}
+
+.info-label {
+  color: #587597;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.info-value {
+  color: #193756;
+  font-size: 0.92rem;
+  text-align: right;
+  word-break: break-all;
+}
+
+.info-value.mono {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.76rem;
+}
+
+@media (max-width: 920px) {
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-panel {
+    order: -1;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-shell {
+    padding: 16px;
+  }
+
+  .dashboard-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .actions-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .action-card {
+    min-height: 170px;
+  }
+}
