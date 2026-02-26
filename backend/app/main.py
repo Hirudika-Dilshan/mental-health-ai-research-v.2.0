@@ -79,6 +79,7 @@ class ChatPersistRequest(BaseModel):
     mode: Literal["general", "anxiety", "depression"]
     role: Literal["user", "assistant"]
     content: str
+    conversation_id: str | None = None
 
 
 class ChatHistoryItem(BaseModel):
@@ -89,6 +90,16 @@ class ChatHistoryItem(BaseModel):
 
 class ChatHistoryResponse(BaseModel):
     messages: list[ChatHistoryItem]
+
+
+class ChatConversationItem(BaseModel):
+    conversation_id: str
+    title: str
+    updated_at: str
+
+
+class ChatConversationsResponse(BaseModel):
+    conversations: list[ChatConversationItem]
 
 
 def _safe_json(response: httpx.Response) -> dict:
@@ -123,6 +134,16 @@ def _supabase_service_headers() -> dict:
         "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
         "Content-Type": "application/json",
     }
+
+
+def _raise_supabase_http_error(action: str, response: httpx.Response):
+    body = response.text[:500]
+    # Keep a server-side trace for fast terminal debugging.
+    print(f"[Supabase:{action}] status={response.status_code} body={body}")
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Supabase {action} failed ({response.status_code}): {body}",
+    )
 
 
 @app.get("/health")
@@ -285,10 +306,18 @@ async def chat_respond(body: ChatRequest):
 
 
 @app.get("/chat/history", response_model=ChatHistoryResponse)
-async def chat_history(user_id: str, mode: Literal["general", "anxiety", "depression"]):
+async def chat_history(
+    user_id: str,
+    mode: Literal["general", "anxiety", "depression"],
+    conversation_id: str | None = None,
+):
+    conversation_filter = ""
+    if conversation_id:
+        conversation_filter = f"&conversation_id=eq.{conversation_id}"
+
     url = (
         f"{SUPABASE_URL}/rest/v1/chat_messages"
-        f"?user_id=eq.{user_id}&mode=eq.{mode}"
+        f"?user_id=eq.{user_id}&mode=eq.{mode}{conversation_filter}"
         "&select=role,content,created_at&order=created_at.asc"
     )
     headers = _supabase_service_headers()
@@ -303,10 +332,7 @@ async def chat_history(user_id: str, mode: Literal["general", "anxiety", "depres
         )
 
     if res.status_code != 200:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to fetch chat history: {res.text}",
-        )
+        _raise_supabase_http_error("fetch_chat_history", res)
 
     rows = res.json()
     messages: list[ChatHistoryItem] = []
@@ -333,6 +359,7 @@ async def chat_messages(body: ChatPersistRequest):
         "mode": body.mode,
         "role": body.role,
         "content": body.content,
+        "conversation_id": body.conversation_id or "default",
     }
 
     try:
@@ -345,17 +372,25 @@ async def chat_messages(body: ChatPersistRequest):
         )
 
     if res.status_code not in (200, 201):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to save chat message: {res.text}",
-        )
+        _raise_supabase_http_error("save_chat_message", res)
 
     return {"message": "saved"}
 
 
 @app.delete("/chat/history")
-async def delete_chat_history(user_id: str, mode: Literal["general", "anxiety", "depression"]):
-    url = f"{SUPABASE_URL}/rest/v1/chat_messages?user_id=eq.{user_id}&mode=eq.{mode}"
+async def delete_chat_history(
+    user_id: str,
+    mode: Literal["general", "anxiety", "depression"],
+    conversation_id: str | None = None,
+):
+    conversation_filter = ""
+    if conversation_id:
+        conversation_filter = f"&conversation_id=eq.{conversation_id}"
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/chat_messages"
+        f"?user_id=eq.{user_id}&mode=eq.{mode}{conversation_filter}"
+    )
     headers = _supabase_service_headers()
     headers["Prefer"] = "return=minimal"
 
@@ -369,9 +404,56 @@ async def delete_chat_history(user_id: str, mode: Literal["general", "anxiety", 
         )
 
     if res.status_code not in (200, 204):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to delete chat history: {res.text}",
-        )
+        _raise_supabase_http_error("delete_chat_history", res)
 
     return {"message": "deleted"}
+
+
+@app.get("/chat/conversations", response_model=ChatConversationsResponse)
+async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "depression"]):
+    url = (
+        f"{SUPABASE_URL}/rest/v1/chat_messages"
+        f"?user_id=eq.{user_id}&mode=eq.{mode}"
+        "&select=conversation_id,role,content,created_at"
+        "&order=created_at.desc"
+    )
+    headers = _supabase_service_headers()
+
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to reach Supabase while loading conversation list.",
+        )
+
+    if res.status_code != 200:
+        _raise_supabase_http_error("load_conversations", res)
+
+    rows = res.json()
+    if not isinstance(rows, list):
+        return ChatConversationsResponse(conversations=[])
+
+    by_conversation: dict[str, ChatConversationItem] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        convo_id = row.get("conversation_id") or "default"
+        if convo_id in by_conversation:
+            continue
+
+        content = str(row.get("content") or "").strip()
+        title = content[:48] + "..." if len(content) > 48 else content
+        if not title:
+            title = "New chat"
+
+        by_conversation[convo_id] = ChatConversationItem(
+            conversation_id=convo_id,
+            title=title,
+            updated_at=row.get("created_at") or "",
+        )
+
+    items = list(by_conversation.values())
+    items.sort(key=lambda item: item.updated_at, reverse=True)
+    return ChatConversationsResponse(conversations=items)

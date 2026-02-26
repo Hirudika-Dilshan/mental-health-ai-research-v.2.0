@@ -46,6 +46,13 @@ const DEPRESSION_QUESTIONS = [
   "How often have you had trouble sleeping or sleeping too much?",
 ];
 
+function createConversationId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `conv-${Date.now()}`;
+}
+
 export default function ChatWorkspace({ mode = "general" }) {
   const config = MODE_CONFIG[mode] || MODE_CONFIG.general;
   const { user } = useAuth();
@@ -53,6 +60,8 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
 
   const protocolQuestionList = useMemo(() => {
     if (mode === "anxiety") return ANXIETY_QUESTIONS;
@@ -60,9 +69,48 @@ export default function ChatWorkspace({ mode = "general" }) {
     return [];
   }, [mode]);
 
+  const isGeneralMode = mode === "general";
+  const conversationId = activeConversationId || "default";
+
+  useEffect(() => {
+    const init = async () => {
+      if (!user?.user_id) {
+        setMessages([{ role: "assistant", content: config.greeting }]);
+        setLoadingHistory(false);
+        return;
+      }
+
+      if (!isGeneralMode) {
+        setActiveConversationId("default");
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `${API_URL}/chat/conversations?user_id=${encodeURIComponent(user.user_id)}&mode=general`,
+        );
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.conversations) && data.conversations.length > 0) {
+          setConversations(data.conversations);
+          setActiveConversationId(data.conversations[0].conversation_id);
+        } else {
+          const id = createConversationId();
+          setConversations([{ conversation_id: id, title: "New chat", updated_at: "" }]);
+          setActiveConversationId(id);
+        }
+      } catch {
+        const id = createConversationId();
+        setConversations([{ conversation_id: id, title: "New chat", updated_at: "" }]);
+        setActiveConversationId(id);
+      }
+    };
+
+    init();
+  }, [user?.user_id, isGeneralMode, config.greeting]);
+
   useEffect(() => {
     const loadHistory = async () => {
-      if (!user?.user_id) {
+      if (!user?.user_id || !conversationId) {
         setMessages([{ role: "assistant", content: config.greeting }]);
         setLoadingHistory(false);
         return;
@@ -71,15 +119,11 @@ export default function ChatWorkspace({ mode = "general" }) {
       setLoadingHistory(true);
       try {
         const res = await fetch(
-          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}`,
+          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(conversationId)}`,
         );
         const data = await res.json();
         if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
-          const formatted = data.messages.map((msg) => ({
-            role: msg.role,
-            content: msg.content,
-          }));
-          setMessages(formatted);
+          setMessages(data.messages.map((msg) => ({ role: msg.role, content: msg.content })));
         } else {
           setMessages([{ role: "assistant", content: config.greeting }]);
         }
@@ -91,7 +135,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     };
 
     loadHistory();
-  }, [user?.user_id, mode, config.greeting]);
+  }, [user?.user_id, mode, conversationId, config.greeting]);
 
   const persistMessage = async (msg) => {
     if (!user?.user_id) return;
@@ -102,6 +146,7 @@ export default function ChatWorkspace({ mode = "general" }) {
         body: JSON.stringify({
           user_id: user.user_id,
           mode,
+          conversation_id: conversationId,
           role: msg.role,
           content: msg.content,
         }),
@@ -111,15 +156,32 @@ export default function ChatWorkspace({ mode = "general" }) {
     }
   };
 
+  const updateConversationPreview = (latestText) => {
+    if (!isGeneralMode) return;
+    const title = latestText.length > 48 ? `${latestText.slice(0, 48)}...` : latestText;
+    const updated = new Date().toISOString();
+
+    setConversations((prev) => {
+      const others = prev.filter((item) => item.conversation_id !== conversationId);
+      const current = {
+        conversation_id: conversationId,
+        title: title || "New chat",
+        updated_at: updated,
+      };
+      return [current, ...others];
+    });
+  };
+
   const sendMessage = async (event) => {
     event.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || loading) return;
+    if (!trimmed || loading || loadingHistory) return;
 
     const userMsg = { role: "user", content: trimmed };
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     setInput("");
+    updateConversationPreview(trimmed);
     persistMessage(userMsg);
 
     if (mode === "general") {
@@ -152,10 +214,7 @@ export default function ChatWorkspace({ mode = "general" }) {
           role: "assistant",
           content: "Network error while contacting the backend. Check API server and VITE_API_URL.",
         };
-        setMessages((prev) => [
-          ...prev,
-          assistantMsg,
-        ]);
+        setMessages((prev) => [...prev, assistantMsg]);
         persistMessage(assistantMsg);
       } finally {
         setLoading(false);
@@ -183,18 +242,25 @@ export default function ChatWorkspace({ mode = "general" }) {
   };
 
   const clearChat = async () => {
+    if (isGeneralMode) {
+      const id = createConversationId();
+      setActiveConversationId(id);
+      setConversations((prev) => [{ conversation_id: id, title: "New chat", updated_at: "" }, ...prev]);
+      setMessages([{ role: "assistant", content: config.greeting }]);
+      return;
+    }
+
     if (user?.user_id) {
       try {
         await fetch(
-          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}`,
+          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(conversationId)}`,
           { method: "DELETE" },
         );
       } catch {
         // Ignore delete failures; reset current UI anyway.
       }
     }
-    const reset = [{ role: "assistant", content: config.greeting }];
-    setMessages(reset);
+    setMessages([{ role: "assistant", content: config.greeting }]);
   };
 
   return (
@@ -207,6 +273,26 @@ export default function ChatWorkspace({ mode = "general" }) {
         <button type="button" className="side-link side-btn" onClick={clearChat}>
           New Chat
         </button>
+
+        {isGeneralMode && (
+          <div className="conversation-list">
+            <p className="conversation-title">Recent Chats</p>
+            {conversations.map((item) => (
+              <button
+                key={item.conversation_id}
+                type="button"
+                className={
+                  item.conversation_id === conversationId
+                    ? "conversation-item active"
+                    : "conversation-item"
+                }
+                onClick={() => setActiveConversationId(item.conversation_id)}
+              >
+                {item.title || "New chat"}
+              </button>
+            ))}
+          </div>
+        )}
       </aside>
 
       <section className="chat-main">
@@ -225,12 +311,13 @@ export default function ChatWorkspace({ mode = "general" }) {
               <p>Loading previous chat...</p>
             </div>
           )}
-          {messages.map((msg, idx) => (
-            <div key={idx} className={msg.role === "user" ? "msg user" : "msg assistant"}>
-              <div className="msg-role">{msg.role === "user" ? "You" : "Assistant"}</div>
-              <p>{msg.content}</p>
-            </div>
-          ))}
+          {!loadingHistory &&
+            messages.map((msg, idx) => (
+              <div key={idx} className={msg.role === "user" ? "msg user" : "msg assistant"}>
+                <div className="msg-role">{msg.role === "user" ? "You" : "Assistant"}</div>
+                <p>{msg.content}</p>
+              </div>
+            ))}
           {loading && (
             <div className="msg assistant">
               <div className="msg-role">Assistant</div>
@@ -246,7 +333,7 @@ export default function ChatWorkspace({ mode = "general" }) {
             placeholder="Type your message..."
             aria-label="Type message"
           />
-          <button type="submit" disabled={loading}>
+          <button type="submit" disabled={loading || loadingHistory}>
             Send
           </button>
         </form>
