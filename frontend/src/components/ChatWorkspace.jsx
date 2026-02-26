@@ -60,6 +60,7 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [deletingConversationId, setDeletingConversationId] = useState("");
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [openMenuConversationId, setOpenMenuConversationId] = useState("");
+  const [anxietyAwaitingFrequency, setAnxietyAwaitingFrequency] = useState(false);
   const messagesRef = useRef(null);
   const menuWrapRefs = useRef({});
   const skipNextHistoryReloadRef = useRef("");
@@ -88,6 +89,7 @@ export default function ChatWorkspace({ mode = "general" }) {
       if (!isGeneralMode) {
         if (!cancelled) {
           setActiveConversationId("default");
+          setAnxietyAwaitingFrequency(false);
         }
         return;
       }
@@ -180,14 +182,26 @@ export default function ChatWorkspace({ mode = "general" }) {
         );
         const data = await res.json();
         if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
-          setMessages(data.messages.map((msg) => ({ role: msg.role, content: msg.content })));
+          const formatted = data.messages.map((msg) => ({ role: msg.role, content: msg.content }));
+          setMessages(formatted);
+          if (mode === "anxiety") {
+            const lastAssistant = [...formatted].reverse().find((m) => m.role === "assistant");
+            const awaiting = Boolean(
+              lastAssistant &&
+              lastAssistant.content &&
+              lastAssistant.content.toLowerCase().includes("please choose 1, 2, 3, or 4"),
+            );
+            setAnxietyAwaitingFrequency(awaiting);
+          }
         } else {
           setMessages([{ role: "assistant", content: config.greeting }]);
+          if (mode === "anxiety") setAnxietyAwaitingFrequency(false);
         }
       } catch (err) {
         if (err?.name === "AbortError") return;
         setHistoryError("Could not load chat history. Showing a fresh chat view.");
         setMessages([{ role: "assistant", content: config.greeting }]);
+        if (mode === "anxiety") setAnxietyAwaitingFrequency(false);
       } finally {
         setLoadingHistory(false);
       }
@@ -298,6 +312,13 @@ export default function ChatWorkspace({ mode = "general" }) {
     event.preventDefault();
     const trimmed = input.trim();
     if (!trimmed || loading || loadingHistory) return;
+    if (mode === "anxiety" && anxietyAwaitingFrequency) return;
+
+    await submitUserText(trimmed);
+  };
+
+  const submitUserText = async (trimmed) => {
+    if (!trimmed || loading || loadingHistory) return;
 
     const userMsg = { role: "user", content: trimmed };
     const nextMessages = [...messages, userMsg];
@@ -346,6 +367,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     }
 
     if (mode === "anxiety") {
+      setLoading(true);
       try {
         const res = await fetch(`${API_URL}/protocol/gad7/respond`, {
           method: "POST",
@@ -363,6 +385,7 @@ export default function ChatWorkspace({ mode = "general" }) {
         const assistantMsg = { role: "assistant", content: assistantText };
         if (data?.delete_partial) {
           setMessages([{ role: "assistant", content: assistantText }]);
+          setAnxietyAwaitingFrequency(false);
           if (user?.user_id) {
             try {
               await fetch(
@@ -375,6 +398,7 @@ export default function ChatWorkspace({ mode = "general" }) {
           }
           return;
         }
+        setAnxietyAwaitingFrequency(Boolean(data?.state?.awaiting_frequency));
         persistMessage(userMsg);
         setMessages((prev) => [...prev, assistantMsg]);
         persistMessage(assistantMsg);
@@ -386,6 +410,9 @@ export default function ChatWorkspace({ mode = "general" }) {
         persistMessage(userMsg);
         setMessages((prev) => [...prev, assistantMsg]);
         persistMessage(assistantMsg);
+        setAnxietyAwaitingFrequency(false);
+      } finally {
+        setLoading(false);
       }
       return;
     }
@@ -417,6 +444,22 @@ export default function ChatWorkspace({ mode = "general" }) {
       }
       createAndSelectDraftConversation();
       return;
+    }
+
+    if (mode === "anxiety" && user?.user_id) {
+      try {
+        await fetch(`${API_URL}/protocol/gad7/reset`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user.user_id,
+            conversation_id: conversationId || "default",
+          }),
+        });
+      } catch {
+        // Best-effort reset; continue with local reset below.
+      }
+      setAnxietyAwaitingFrequency(false);
     }
 
     if (user?.user_id) {
@@ -552,13 +595,30 @@ export default function ChatWorkspace({ mode = "general" }) {
         </div>
 
         <form className="chat-input-row" onSubmit={sendMessage}>
+          {mode === "anxiety" && anxietyAwaitingFrequency && (
+            <div className="anxiety-frequency-bar">
+              <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory}>
+                1. Not at all
+              </button>
+              <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory}>
+                2. Several days
+              </button>
+              <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory}>
+                3. More than half the days
+              </button>
+              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory}>
+                4. Nearly every day
+              </button>
+            </div>
+          )}
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Type your message..."
+            placeholder={mode === "anxiety" && anxietyAwaitingFrequency ? "Select one option above" : "Type your message..."}
             aria-label="Type message"
+            disabled={loading || loadingHistory || (mode === "anxiety" && anxietyAwaitingFrequency)}
           />
-          <button type="submit" disabled={loading || loadingHistory}>
+          <button type="submit" disabled={loading || loadingHistory || (mode === "anxiety" && anxietyAwaitingFrequency)}>
             Send
           </button>
         </form>

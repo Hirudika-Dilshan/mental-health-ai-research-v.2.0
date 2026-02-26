@@ -304,6 +304,35 @@
   margin: 0 auto;
 }
 
+.anxiety-frequency-bar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.anxiety-frequency-bar button {
+  border: 1px solid #b8d0f0;
+  border-radius: 10px;
+  background: #eef5ff;
+  color: #1d4f84;
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 10px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.anxiety-frequency-bar button:hover {
+  background: #e2eeff;
+}
+
+.anxiety-frequency-bar button:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
 .chat-input-row input {
   border: 1px solid #c9ddf7;
   border-radius: 10px;

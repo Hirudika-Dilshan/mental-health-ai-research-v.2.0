@@ -1,41 +1,46 @@
+import json
 import os
+from datetime import datetime
 from functools import lru_cache
-from typing import Literal
+from typing import Dict, Literal, Optional
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
+
 from app.services.gad7_protocol import GAD7Protocol
 from app.services.llm_service import LLMService
 
 load_dotenv()
 
-# Config
+# ── Config ─────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # Never expose
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_KEY or not SUPABASE_ANON_KEY:
     raise RuntimeError("Missing Supabase env vars. Check your .env file.")
 
-app = FastAPI(title="Auth API")
+app = FastAPI(title="Mental Health Screening API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL],
+    allow_origins=[FRONTEND_URL, "http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ── Pydantic models ────────────────────────────────────────────────────────
+
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
-    name: str | None = None
+    name: Optional[str] = None
 
 
 class RegisterResponse(BaseModel):
@@ -54,7 +59,7 @@ class LoginResponse(BaseModel):
     refresh_token: str
     user_id: str
     email: str
-    name: str | None = None
+    name: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -80,13 +85,13 @@ class ChatPersistRequest(BaseModel):
     mode: Literal["general", "anxiety", "depression"]
     role: Literal["user", "assistant"]
     content: str
-    conversation_id: str | None = None
+    conversation_id: Optional[str] = None
 
 
 class ChatHistoryItem(BaseModel):
     role: Literal["user", "assistant"]
     content: str
-    created_at: str | None = None
+    created_at: Optional[str] = None
 
 
 class ChatHistoryResponse(BaseModel):
@@ -109,16 +114,23 @@ class GAD7Request(BaseModel):
     user_message: str
 
 
+class GAD7ResetRequest(BaseModel):
+    user_id: str
+    conversation_id: str = "default"
+
+
 class GAD7Response(BaseModel):
     reply: str
     completed: bool = False
-    score: int | None = None
-    severity: str | None = None
+    score: Optional[int] = None
+    severity: Optional[str] = None
     crisis: bool = False
     withdrawn: bool = False
     delete_partial: bool = False
     state: dict
 
+
+# ── Internal helpers ───────────────────────────────────────────────────────
 
 def _safe_json(response: httpx.Response) -> dict:
     try:
@@ -156,7 +168,6 @@ def _supabase_service_headers() -> dict:
 
 def _raise_supabase_http_error(action: str, response: httpx.Response):
     body = response.text[:500]
-    # Keep a server-side trace for fast terminal debugging.
     print(f"[Supabase:{action}] status={response.status_code} body={body}")
     raise HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
@@ -164,95 +175,212 @@ def _raise_supabase_http_error(action: str, response: httpx.Response):
     )
 
 
-def _shorten(text: str, max_len: int = 26) -> str:
+def _shorten(text: str, max_len: int = 60) -> str:
     value = text.strip()
-    if len(value) <= max_len:
-        return value
-    return f"{value[:max_len].rstrip()}..."
+    return value if len(value) <= max_len else f"{value[:max_len].rstrip()}..."
 
 
 def _build_conversation_title(user_messages: list[str], fallback: str) -> str:
     first_user = next((msg for msg in user_messages if msg.strip()), "")
-    if first_user:
-        return _shorten(first_user, max_len=60)
-    return _shorten(fallback.strip() or "New chat", max_len=80)
+    return _shorten(first_user or fallback or "New chat")
 
 
-_gad7_sessions: dict[str, GAD7Protocol] = {}
+# ── GAD-7 Session Management (Supabase-backed) ─────────────────────────────
+#
+# State is persisted to `gad7_sessions` table so it survives server restarts.
+# Falls back gracefully to in-memory if the table doesn't exist yet.
+#
+# Required Supabase table (run once):
+#   CREATE TABLE gad7_sessions (
+#     id TEXT PRIMARY KEY,           -- "{user_id}:{conversation_id}"
+#     user_id TEXT NOT NULL,
+#     conversation_id TEXT NOT NULL,
+#     protocol_state JSONB,
+#     total_score INTEGER,
+#     severity_level TEXT,
+#     protocol_completed BOOLEAN DEFAULT FALSE,
+#     created_at TIMESTAMPTZ DEFAULT NOW(),
+#     updated_at TIMESTAMPTZ DEFAULT NOW()
+#   );
+#
+# NOTE: If you prefer pure in-memory (no DB table), keep _memory_sessions only.
+
+_memory_sessions: Dict[str, GAD7Protocol] = {}
+_last_gad7_prefix: Dict[str, str] = {}
 
 
-def _get_gad7_session(user_id: str, conversation_id: str) -> GAD7Protocol:
+async def _load_gad7_session(user_id: str, conversation_id: str) -> GAD7Protocol:
+    """Load protocol state from Supabase; fall back to in-memory."""
     key = f"{user_id}:{conversation_id}"
-    if key not in _gad7_sessions:
-        _gad7_sessions[key] = GAD7Protocol()
-    return _gad7_sessions[key]
 
+    # Check in-memory cache first (avoids DB round-trip on same request burst)
+    if key in _memory_sessions:
+        return _memory_sessions[key]
+
+    protocol = GAD7Protocol()
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/gad7_sessions"
+        params = {"id": f"eq.{key}", "select": "protocol_state"}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(
+                url, headers=_supabase_service_headers(), params=params, timeout=5.0
+            )
+        if res.status_code == 200:
+            rows = res.json()
+            if rows and isinstance(rows, list) and rows[0].get("protocol_state"):
+                protocol.load_state(rows[0]["protocol_state"])
+    except Exception as exc:
+        # Non-fatal: continue with fresh protocol if DB unavailable
+        print(f"[GAD7] state load warning: {exc}")
+
+    _memory_sessions[key] = protocol
+    return protocol
+
+
+async def _save_gad7_session(
+    user_id: str,
+    conversation_id: str,
+    protocol: GAD7Protocol,
+    completed: bool = False,
+):
+    """Persist protocol state to Supabase and update in-memory cache."""
+    key = f"{user_id}:{conversation_id}"
+    _memory_sessions[key] = protocol
+
+    update_data = {
+        "id": key,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "protocol_state": protocol.get_state(),
+        "total_score": protocol.total_score,
+        "severity_level": protocol.calculate_severity() if protocol.total_score else None,
+        "protocol_completed": completed,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/gad7_sessions"
+        headers = _supabase_service_headers()
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+        async with httpx.AsyncClient() as client:
+            await client.post(url, headers=headers, json=update_data, timeout=5.0)
+    except Exception as exc:
+        print(f"[GAD7] state save warning: {exc}")
+
+
+def _reset_gad7_session(user_id: str, conversation_id: str):
+    key = f"{user_id}:{conversation_id}"
+    _memory_sessions.pop(key, None)
+    _last_gad7_prefix.pop(key, None)
+
+
+async def _delete_gad7_session_row(user_id: str, conversation_id: str):
+    key = f"{user_id}:{conversation_id}"
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/gad7_sessions"
+        params = {"id": f"eq.{key}"}
+        headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
+        async with httpx.AsyncClient() as client:
+            await client.delete(url, headers=headers, params=params, timeout=5.0)
+    except Exception as exc:
+        print(f"[GAD7] reset DB row warning: {exc}")
+
+
+def _is_structured_protocol_input(text: str) -> bool:
+    value = (text or "").strip().lower()
+    if value in {"yes", "y", "yeah", "yep", "ok", "okay", "no", "n", "nope", "1", "2", "3", "4"}:
+        return True
+    keywords = [
+        "skip",
+        "back",
+        "go back",
+        "stop",
+        "exit",
+        "quit",
+        "how many questions",
+        "what is gad",
+        "why are you asking",
+        "restart",
+    ]
+    return any(k in value for k in keywords)
+
+
+# ── LLM conversational wrapper ─────────────────────────────────────────────
 
 def _build_gad7_conversational_reply(
+    session_key: str,
     user_message: str,
     protocol_reply: str,
     completed: bool,
     crisis: bool,
     withdrawn: bool,
 ) -> str:
-    # Keep safety-critical protocol wording unchanged.
+    """Optionally prepend a short empathetic LLM prefix.
+    Safety-critical protocol messages are never modified."""
     if crisis or withdrawn:
         return protocol_reply
 
     system_prompt = (
         "You are a compassionate mental-health research assistant.\n"
-        "Task: make the response conversational and supportive, but do NOT change protocol meaning.\n"
-        "Rules:\n"
-        "- Keep output concise (2-5 lines).\n"
-        "- Preserve the exact screening instruction/question at the end.\n"
-        "- Do not diagnose.\n"
-        "- If the protocol text contains options (like 1-4), keep them.\n"
-        "- If completed=true, give a supportive closing and include protocol result clearly."
+        "Write ONE short supportive line only (max 12 words), specific to the latest user text.\n"
+        "Avoid generic repeated encouragement. Do not use the exact phrase 'You're doing the best you can'.\n"
+        "No diagnosis. No safety advice. No instructions."
     )
     user_prompt = (
-        f"User message: {user_message}\n\n"
-        f"Protocol response (must preserve meaning):\n{protocol_reply}\n\n"
-        f"Completed: {completed}\n"
-        "Return only final assistant message."
+        f"User said: {user_message}\n"
+        f"Protocol stage completed: {completed}\n"
+        "Return only one brief empathetic sentence."
     )
 
     try:
         llm = _get_llm_service()
-        return llm.generate_response(
-            system_prompt=system_prompt,
-            conversation_history=[],
-            user_message=user_prompt,
-        )
+        prefix = (
+            llm.generate_response(
+                system_prompt=system_prompt,
+                conversation_history=[],
+                user_message=user_prompt,
+            )
+            or ""
+        ).strip()
+        if not prefix:
+            return protocol_reply
+        if _last_gad7_prefix.get(session_key) == prefix:
+            return protocol_reply
+        _last_gad7_prefix[session_key] = prefix
+        return f"{prefix}\n\n{protocol_reply}"
     except Exception:
         return protocol_reply
 
 
+# ── Delete chat rows helper ────────────────────────────────────────────────
+
 async def _delete_chat_history_rows(
     user_id: str,
     mode: Literal["general", "anxiety", "depression"],
-    conversation_id: str | None = None,
+    conversation_id: Optional[str] = None,
 ):
     url = f"{SUPABASE_URL}/rest/v1/chat_messages"
-    params = {
-        "user_id": f"eq.{user_id}",
-        "mode": f"eq.{mode}",
-    }
+    params = {"user_id": f"eq.{user_id}", "mode": f"eq.{mode}"}
     if conversation_id:
         params["conversation_id"] = f"eq.{conversation_id}"
-
-    headers = _supabase_service_headers()
-    headers["Prefer"] = "return=minimal"
-
+    headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
     async with httpx.AsyncClient() as client:
         res = await client.delete(url, headers=headers, params=params, timeout=10.0)
     if res.status_code not in (200, 204):
         _raise_supabase_http_error("delete_chat_history", res)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ROUTES
+# ══════════════════════════════════════════════════════════════════════════════
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
+# ── Auth ───────────────────────────────────────────────────────────────────
 
 @app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(body: RegisterRequest):
@@ -275,10 +403,7 @@ async def register(body: RegisterRequest):
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Cannot reach Supabase. Check SUPABASE_URL in backend/.env "
-                "(expected format: https://<project-ref>.supabase.co)."
-            ),
+            detail="Cannot reach Supabase. Check SUPABASE_URL in .env.",
         )
 
     if res.status_code == 422:
@@ -286,7 +411,6 @@ async def register(body: RegisterRequest):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid email or weak password (min 6 characters).",
         )
-
     if res.status_code == 400:
         data = _safe_json(res)
         if _is_duplicate_email(data):
@@ -298,7 +422,6 @@ async def register(body: RegisterRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=data.get("msg") or data.get("message") or "Bad request.",
         )
-
     if res.status_code not in (200, 201):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -316,34 +439,28 @@ async def register(body: RegisterRequest):
 @app.post("/login", response_model=LoginResponse)
 async def login(body: LoginRequest):
     token_url = f"{SUPABASE_URL}/auth/v1/token?grant_type=password"
-    token_headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Content-Type": "application/json",
-    }
-    token_payload = {
-        "email": body.email,
-        "password": body.password,
-    }
+    token_headers = {"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"}
 
     try:
         async with httpx.AsyncClient() as client:
             token_res = await client.post(
-                token_url, headers=token_headers, json=token_payload, timeout=10.0
+                token_url,
+                headers=token_headers,
+                json={"email": body.email, "password": body.password},
+                timeout=10.0,
             )
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Cannot reach Supabase. Check SUPABASE_URL in backend/.env "
-                "(expected format: https://<project-ref>.supabase.co)."
-            ),
+            detail="Cannot reach Supabase. Check SUPABASE_URL in .env.",
         )
 
     if token_res.status_code == 400:
         data = _safe_json(token_res)
-        msg = data.get("error_description") or data.get("msg") or "Invalid email or password."
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=msg)
-
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=data.get("error_description") or "Invalid email or password.",
+        )
     if token_res.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -352,54 +469,42 @@ async def login(body: LoginRequest):
 
     token_data = token_res.json()
     access_token = token_data["access_token"]
-    refresh_token = token_data["refresh_token"]
     user = token_data["user"]
     user_id = user["id"]
 
-    profile_url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user_id}&select=name"
-    profile_headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": f"Bearer {access_token}",
-    }
-
+    # Fetch display name from profiles table
+    name = None
     try:
+        profile_url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user_id}&select=name"
+        profile_headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient() as client:
             profile_res = await client.get(profile_url, headers=profile_headers, timeout=10.0)
-    except httpx.RequestError:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Logged in, but failed to fetch profile from Supabase REST API. "
-                "Verify SUPABASE_URL and network access."
-            ),
-        )
-
-    name = None
-    if profile_res.status_code == 200:
-        rows = profile_res.json()
-        if rows:
-            name = rows[0].get("name")
+        if profile_res.status_code == 200:
+            rows = profile_res.json()
+            if rows:
+                name = rows[0].get("name")
+    except Exception:
+        pass  # Non-fatal; name just stays None
 
     return LoginResponse(
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=token_data["refresh_token"],
         user_id=user_id,
         email=user["email"],
         name=name,
     )
 
 
+# ── General chat ───────────────────────────────────────────────────────────
+
 @app.post("/chat/respond", response_model=ChatResponse)
 async def chat_respond(body: ChatRequest):
     try:
         llm = _get_llm_service()
     except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
-        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
-    history = [{"role": msg.role, "content": msg.content} for msg in body.conversation_history]
+    history = [{"role": m.role, "content": m.content} for m in body.conversation_history]
     reply = llm.generate_response(
         system_prompt=body.system_prompt,
         conversation_history=history,
@@ -412,7 +517,7 @@ async def chat_respond(body: ChatRequest):
 async def chat_history(
     user_id: str,
     mode: Literal["general", "anxiety", "depression"],
-    conversation_id: str | None = None,
+    conversation_id: Optional[str] = None,
 ):
     url = f"{SUPABASE_URL}/rest/v1/chat_messages"
     params = {
@@ -424,11 +529,11 @@ async def chat_history(
     if conversation_id:
         params["conversation_id"] = f"eq.{conversation_id}"
 
-    headers = _supabase_service_headers()
-
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers, params=params, timeout=10.0)
+            res = await client.get(
+                url, headers=_supabase_service_headers(), params=params, timeout=10.0
+            )
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -439,25 +544,22 @@ async def chat_history(
         _raise_supabase_http_error("fetch_chat_history", res)
 
     rows = res.json()
-    messages: list[ChatHistoryItem] = []
-    if isinstance(rows, list):
-        for row in rows:
-            if isinstance(row, dict):
-                messages.append(
-                    ChatHistoryItem(
-                        role=row.get("role", "assistant"),
-                        content=row.get("content", ""),
-                        created_at=row.get("created_at"),
-                    )
-                )
+    messages = [
+        ChatHistoryItem(
+            role=row.get("role", "assistant"),
+            content=row.get("content", ""),
+            created_at=row.get("created_at"),
+        )
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, dict)
+    ]
     return ChatHistoryResponse(messages=messages)
 
 
 @app.post("/chat/messages", status_code=status.HTTP_201_CREATED)
 async def chat_messages(body: ChatPersistRequest):
     url = f"{SUPABASE_URL}/rest/v1/chat_messages"
-    headers = _supabase_service_headers()
-    headers["Prefer"] = "return=minimal"
+    headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
     payload = {
         "user_id": body.user_id,
         "mode": body.mode,
@@ -485,7 +587,7 @@ async def chat_messages(body: ChatPersistRequest):
 async def delete_chat_history(
     user_id: str,
     mode: Literal["general", "anxiety", "depression"],
-    conversation_id: str | None = None,
+    conversation_id: Optional[str] = None,
 ):
     try:
         await _delete_chat_history_rows(user_id=user_id, mode=mode, conversation_id=conversation_id)
@@ -494,7 +596,6 @@ async def delete_chat_history(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Unable to reach Supabase while deleting chat history.",
         )
-
     return {"message": "deleted"}
 
 
@@ -508,11 +609,12 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
         "order": "created_at.asc",
         "limit": "1000",
     }
-    headers = _supabase_service_headers()
 
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers, params=params, timeout=10.0)
+            res = await client.get(
+                url, headers=_supabase_service_headers(), params=params, timeout=10.0
+            )
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -526,7 +628,7 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
     if not isinstance(rows, list):
         return ChatConversationsResponse(conversations=[])
 
-    by_conversation: dict[str, dict] = {}
+    by_conversation: Dict[str, dict] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -542,49 +644,77 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
                 "user_messages": [content] if row_role == "user" and content else [],
             }
             continue
-
         if row_created > (existing.get("updated_at") or ""):
             existing["updated_at"] = row_created
             existing["latest_content"] = content or existing.get("latest_content", "")
         if row_role == "user" and content and len(existing["user_messages"]) < 3:
             existing["user_messages"].append(content)
 
-    items: list[ChatConversationItem] = []
-    for convo_id, agg in by_conversation.items():
-        title = _build_conversation_title(
-            user_messages=agg.get("user_messages", []),
-            fallback=agg.get("latest_content") or "New chat",
+    items = [
+        ChatConversationItem(
+            conversation_id=cid,
+            title=_build_conversation_title(
+                user_messages=agg.get("user_messages", []),
+                fallback=agg.get("latest_content") or "New chat",
+            ),
+            updated_at=agg.get("updated_at") or "",
         )
-        items.append(
-            ChatConversationItem(
-                conversation_id=convo_id,
-                title=title,
-                updated_at=agg.get("updated_at") or "",
-            )
-        )
-
-    items.sort(key=lambda item: item.updated_at, reverse=True)
+        for cid, agg in by_conversation.items()
+    ]
+    items.sort(key=lambda i: i.updated_at, reverse=True)
     return ChatConversationsResponse(conversations=items)
+
+
+# ── GAD-7 Protocol ────────────────────────────────────────────────────────
+
+@app.post("/protocol/gad7/start")
+async def gad7_start(body: GAD7ResetRequest):
+    """Start a fresh GAD-7 session and return the first screening question."""
+    _reset_gad7_session(body.user_id, body.conversation_id)
+    await _delete_gad7_session_row(body.user_id, body.conversation_id)
+    protocol = GAD7Protocol()
+    await _save_gad7_session(body.user_id, body.conversation_id, protocol)
+    return GAD7Response(
+        reply=protocol.get_age_screening(),
+        completed=False,
+        state=protocol.get_state(),
+    )
 
 
 @app.post("/protocol/gad7/respond", response_model=GAD7Response)
 async def gad7_respond(body: GAD7Request):
-    session = _get_gad7_session(body.user_id, body.conversation_id)
-    result = session.process_user_input(body.user_message)
-    protocol_reply = result.get("reply", "")
-    completed = bool(result.get("completed", False))
-    crisis = bool(result.get("crisis", False))
-    withdrawn = bool(result.get("withdrawn", False))
-    delete_partial = bool(result.get("delete_partial", False))
+    # Load persisted state
+    protocol = await _load_gad7_session(body.user_id, body.conversation_id)
 
-    final_reply = _build_gad7_conversational_reply(
-        user_message=body.user_message,
-        protocol_reply=protocol_reply,
-        completed=completed,
-        crisis=crisis,
-        withdrawn=withdrawn,
+    # Process input through the protocol state machine
+    result = protocol.process_user_input(body.user_message)
+
+    protocol_reply: str = result.get("reply", "")
+    completed: bool = bool(result.get("completed", False))
+    crisis: bool = bool(result.get("crisis", False))
+    withdrawn: bool = bool(result.get("withdrawn", False))
+    delete_partial: bool = bool(result.get("delete_partial", False))
+
+    # Optionally wrap with a short LLM empathy prefix
+    session_key = f"{body.user_id}:{body.conversation_id}"
+    if _is_structured_protocol_input(body.user_message):
+        final_reply = protocol_reply
+    else:
+        final_reply = _build_gad7_conversational_reply(
+            session_key=session_key,
+            user_message=body.user_message,
+            protocol_reply=protocol_reply,
+            completed=completed,
+            crisis=crisis,
+            withdrawn=withdrawn,
+        )
+
+    # Persist updated state
+    await _save_gad7_session(
+        body.user_id, body.conversation_id, protocol, completed=completed
     )
 
+    # Delete partial data if participant withdrew or was excluded
     if delete_partial:
         try:
             await _delete_chat_history_rows(
@@ -603,5 +733,19 @@ async def gad7_respond(body: GAD7Request):
         crisis=crisis,
         withdrawn=withdrawn,
         delete_partial=delete_partial,
-        state=session.get_state(),
+        state=protocol.get_state(),
     )
+
+
+@app.post("/protocol/gad7/reset")
+async def gad7_reset(body: GAD7ResetRequest):
+    """Hard reset: clears in-memory and DB state."""
+    _reset_gad7_session(body.user_id, body.conversation_id)
+    await _delete_gad7_session_row(body.user_id, body.conversation_id)
+    return {"message": "reset"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
