@@ -18,10 +18,9 @@ const MODE_CONFIG = {
   },
   anxiety: {
     title: "Anxiety Test Chat",
-    subtitle: "Guided protocol placeholder",
+    subtitle: "GAD-7 guided protocol",
     tag: "Protocol",
-    greeting:
-      "Welcome to the anxiety test chat. This is a guided placeholder flow until the full protocol is implemented.",
+    greeting: "Before we begin, are you 18 or older? (Yes/No)",
     systemPrompt: "",
   },
   depression: {
@@ -33,12 +32,6 @@ const MODE_CONFIG = {
     systemPrompt: "",
   },
 };
-
-const ANXIETY_QUESTIONS = [
-  "Over the last 2 weeks, how often have you felt nervous, anxious, or on edge?",
-  "How often have you been unable to stop or control worrying?",
-  "How often have you had trouble relaxing?",
-];
 
 const DEPRESSION_QUESTIONS = [
   "Over the last 2 weeks, how often have you had little interest or pleasure in doing things?",
@@ -72,7 +65,6 @@ export default function ChatWorkspace({ mode = "general" }) {
   const skipNextHistoryReloadRef = useRef("");
 
   const protocolQuestionList = useMemo(() => {
-    if (mode === "anxiety") return ANXIETY_QUESTIONS;
     if (mode === "depression") return DEPRESSION_QUESTIONS;
     return [];
   }, [mode]);
@@ -228,6 +220,12 @@ export default function ChatWorkspace({ mode = "general" }) {
     }
   };
 
+  const shorten = (text, maxLen = 60) => {
+    const value = (text || "").trim();
+    if (value.length <= maxLen) return value;
+    return `${value.slice(0, maxLen).trimEnd()}...`;
+  };
+
   const createAndSelectDraftConversation = () => {
     const id = createConversationId();
     setActiveConversationId(id);
@@ -275,16 +273,21 @@ export default function ChatWorkspace({ mode = "general" }) {
     setOpenMenuConversationId("");
   };
 
-  const updateConversationPreview = (latestText) => {
+  const updateConversationPreview = (latestText, userTurnCount) => {
     if (!isGeneralMode) return;
-    const title = latestText.length > 48 ? `${latestText.slice(0, 48)}...` : latestText;
     const updated = new Date().toISOString();
+
+    let nextTitle = null;
+    if (conversationId && userTurnCount === 1) {
+      nextTitle = shorten(latestText) || "New chat";
+    }
 
     setConversations((prev) => {
       const others = prev.filter((item) => item.conversation_id !== conversationId);
+      const currentItem = prev.find((item) => item.conversation_id === conversationId);
       const current = {
         conversation_id: conversationId,
-        title: title || "New chat",
+        title: nextTitle || currentItem?.title || "New chat",
         updated_at: updated,
       };
       return [current, ...others];
@@ -298,12 +301,13 @@ export default function ChatWorkspace({ mode = "general" }) {
 
     const userMsg = { role: "user", content: trimmed };
     const nextMessages = [...messages, userMsg];
+    const userTurnCount = nextMessages.filter((msg) => msg.role === "user").length;
     setMessages(nextMessages);
     setInput("");
-    updateConversationPreview(trimmed);
-    persistMessage(userMsg);
+    updateConversationPreview(trimmed, userTurnCount);
 
     if (mode === "general") {
+      persistMessage(userMsg);
       setLoading(true);
       try {
         const history = nextMessages
@@ -341,7 +345,51 @@ export default function ChatWorkspace({ mode = "general" }) {
       return;
     }
 
-    const userTurnCount = nextMessages.filter((msg) => msg.role === "user").length;
+    if (mode === "anxiety") {
+      try {
+        const res = await fetch(`${API_URL}/protocol/gad7/respond`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user?.user_id || "anonymous",
+            conversation_id: conversationId || "default",
+            user_message: trimmed,
+          }),
+        });
+        const data = await res.json();
+        const assistantText = res.ok
+          ? data.reply
+          : data.detail || "Unable to continue GAD-7 right now. Please try again.";
+        const assistantMsg = { role: "assistant", content: assistantText };
+        if (data?.delete_partial) {
+          setMessages([{ role: "assistant", content: assistantText }]);
+          if (user?.user_id) {
+            try {
+              await fetch(
+                `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=anxiety&conversation_id=${encodeURIComponent(conversationId || "default")}`,
+                { method: "DELETE" },
+              );
+            } catch {
+              // Best effort delete; backend also attempts partial-data deletion.
+            }
+          }
+          return;
+        }
+        persistMessage(userMsg);
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage(assistantMsg);
+      } catch {
+        const assistantMsg = {
+          role: "assistant",
+          content: "Network error while running GAD-7 protocol. Please try again.",
+        };
+        persistMessage(userMsg);
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage(assistantMsg);
+      }
+      return;
+    }
+
     const index = userTurnCount - 1;
 
     let response = "Thanks. Your answer is noted.";
@@ -356,6 +404,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     }
 
     const assistantMsg = { role: "assistant", content: response };
+    persistMessage(userMsg);
     setMessages((prev) => [...prev, assistantMsg]);
     persistMessage(assistantMsg);
   };

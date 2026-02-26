@@ -103,6 +103,7 @@ Frontend default URL: `http://localhost:5173`
 - `GET /chat/history` - Load saved chat history (`user_id`, `mode`)
 - `POST /chat/messages` - Save one chat message
 - `DELETE /chat/history` - Clear saved chat history (`user_id`, `mode`)
+- `POST /protocol/gad7/respond` - Run GAD-7 protocol turn for anxiety mode
 
 ## Frontend Routes
 

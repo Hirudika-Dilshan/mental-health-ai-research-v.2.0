@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
+from app.services.gad7_protocol import GAD7Protocol
 from app.services.llm_service import LLMService
 
 load_dotenv()
@@ -102,6 +103,23 @@ class ChatConversationsResponse(BaseModel):
     conversations: list[ChatConversationItem]
 
 
+class GAD7Request(BaseModel):
+    user_id: str
+    conversation_id: str = "default"
+    user_message: str
+
+
+class GAD7Response(BaseModel):
+    reply: str
+    completed: bool = False
+    score: int | None = None
+    severity: str | None = None
+    crisis: bool = False
+    withdrawn: bool = False
+    delete_partial: bool = False
+    state: dict
+
+
 def _safe_json(response: httpx.Response) -> dict:
     try:
         data = response.json()
@@ -144,6 +162,91 @@ def _raise_supabase_http_error(action: str, response: httpx.Response):
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail=f"Supabase {action} failed ({response.status_code}): {body}",
     )
+
+
+def _shorten(text: str, max_len: int = 26) -> str:
+    value = text.strip()
+    if len(value) <= max_len:
+        return value
+    return f"{value[:max_len].rstrip()}..."
+
+
+def _build_conversation_title(user_messages: list[str], fallback: str) -> str:
+    first_user = next((msg for msg in user_messages if msg.strip()), "")
+    if first_user:
+        return _shorten(first_user, max_len=60)
+    return _shorten(fallback.strip() or "New chat", max_len=80)
+
+
+_gad7_sessions: dict[str, GAD7Protocol] = {}
+
+
+def _get_gad7_session(user_id: str, conversation_id: str) -> GAD7Protocol:
+    key = f"{user_id}:{conversation_id}"
+    if key not in _gad7_sessions:
+        _gad7_sessions[key] = GAD7Protocol()
+    return _gad7_sessions[key]
+
+
+def _build_gad7_conversational_reply(
+    user_message: str,
+    protocol_reply: str,
+    completed: bool,
+    crisis: bool,
+    withdrawn: bool,
+) -> str:
+    # Keep safety-critical protocol wording unchanged.
+    if crisis or withdrawn:
+        return protocol_reply
+
+    system_prompt = (
+        "You are a compassionate mental-health research assistant.\n"
+        "Task: make the response conversational and supportive, but do NOT change protocol meaning.\n"
+        "Rules:\n"
+        "- Keep output concise (2-5 lines).\n"
+        "- Preserve the exact screening instruction/question at the end.\n"
+        "- Do not diagnose.\n"
+        "- If the protocol text contains options (like 1-4), keep them.\n"
+        "- If completed=true, give a supportive closing and include protocol result clearly."
+    )
+    user_prompt = (
+        f"User message: {user_message}\n\n"
+        f"Protocol response (must preserve meaning):\n{protocol_reply}\n\n"
+        f"Completed: {completed}\n"
+        "Return only final assistant message."
+    )
+
+    try:
+        llm = _get_llm_service()
+        return llm.generate_response(
+            system_prompt=system_prompt,
+            conversation_history=[],
+            user_message=user_prompt,
+        )
+    except Exception:
+        return protocol_reply
+
+
+async def _delete_chat_history_rows(
+    user_id: str,
+    mode: Literal["general", "anxiety", "depression"],
+    conversation_id: str | None = None,
+):
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
+    params = {
+        "user_id": f"eq.{user_id}",
+        "mode": f"eq.{mode}",
+    }
+    if conversation_id:
+        params["conversation_id"] = f"eq.{conversation_id}"
+
+    headers = _supabase_service_headers()
+    headers["Prefer"] = "return=minimal"
+
+    async with httpx.AsyncClient() as client:
+        res = await client.delete(url, headers=headers, params=params, timeout=10.0)
+    if res.status_code not in (200, 204):
+        _raise_supabase_http_error("delete_chat_history", res)
 
 
 @app.get("/health")
@@ -384,28 +487,13 @@ async def delete_chat_history(
     mode: Literal["general", "anxiety", "depression"],
     conversation_id: str | None = None,
 ):
-    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
-    params = {
-        "user_id": f"eq.{user_id}",
-        "mode": f"eq.{mode}",
-    }
-    if conversation_id:
-        params["conversation_id"] = f"eq.{conversation_id}"
-
-    headers = _supabase_service_headers()
-    headers["Prefer"] = "return=minimal"
-
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.delete(url, headers=headers, params=params, timeout=10.0)
+        await _delete_chat_history_rows(user_id=user_id, mode=mode, conversation_id=conversation_id)
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Unable to reach Supabase while deleting chat history.",
         )
-
-    if res.status_code not in (200, 204):
-        _raise_supabase_http_error("delete_chat_history", res)
 
     return {"message": "deleted"}
 
@@ -417,7 +505,7 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
         "user_id": f"eq.{user_id}",
         "mode": f"eq.{mode}",
         "select": "conversation_id,role,content,created_at",
-        "order": "created_at.desc",
+        "order": "created_at.asc",
         "limit": "1000",
     }
     headers = _supabase_service_headers()
@@ -451,17 +539,22 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
             by_conversation[convo_id] = {
                 "updated_at": row_created,
                 "latest_content": content,
-                "latest_user_content": content if row_role == "user" else "",
+                "user_messages": [content] if row_role == "user" and content else [],
             }
             continue
 
-        if not existing.get("latest_user_content") and row_role == "user" and content:
-            existing["latest_user_content"] = content
+        if row_created > (existing.get("updated_at") or ""):
+            existing["updated_at"] = row_created
+            existing["latest_content"] = content or existing.get("latest_content", "")
+        if row_role == "user" and content and len(existing["user_messages"]) < 3:
+            existing["user_messages"].append(content)
 
     items: list[ChatConversationItem] = []
     for convo_id, agg in by_conversation.items():
-        title_source = agg.get("latest_user_content") or agg.get("latest_content") or "New chat"
-        title = title_source[:48] + "..." if len(title_source) > 48 else title_source
+        title = _build_conversation_title(
+            user_messages=agg.get("user_messages", []),
+            fallback=agg.get("latest_content") or "New chat",
+        )
         items.append(
             ChatConversationItem(
                 conversation_id=convo_id,
@@ -472,3 +565,43 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
 
     items.sort(key=lambda item: item.updated_at, reverse=True)
     return ChatConversationsResponse(conversations=items)
+
+
+@app.post("/protocol/gad7/respond", response_model=GAD7Response)
+async def gad7_respond(body: GAD7Request):
+    session = _get_gad7_session(body.user_id, body.conversation_id)
+    result = session.process_user_input(body.user_message)
+    protocol_reply = result.get("reply", "")
+    completed = bool(result.get("completed", False))
+    crisis = bool(result.get("crisis", False))
+    withdrawn = bool(result.get("withdrawn", False))
+    delete_partial = bool(result.get("delete_partial", False))
+
+    final_reply = _build_gad7_conversational_reply(
+        user_message=body.user_message,
+        protocol_reply=protocol_reply,
+        completed=completed,
+        crisis=crisis,
+        withdrawn=withdrawn,
+    )
+
+    if delete_partial:
+        try:
+            await _delete_chat_history_rows(
+                user_id=body.user_id,
+                mode="anxiety",
+                conversation_id=body.conversation_id,
+            )
+        except Exception as exc:
+            print(f"[GAD7] failed to delete partial data: {exc}")
+
+    return GAD7Response(
+        reply=final_reply,
+        completed=completed,
+        score=result.get("score"),
+        severity=result.get("severity"),
+        crisis=crisis,
+        withdrawn=withdrawn,
+        delete_partial=delete_partial,
+        state=session.get_state(),
+    )
