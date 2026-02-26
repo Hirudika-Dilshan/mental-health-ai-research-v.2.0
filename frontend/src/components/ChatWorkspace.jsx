@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
 
@@ -60,8 +60,16 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
   const [conversations, setConversations] = useState([]);
   const [activeConversationId, setActiveConversationId] = useState(null);
+  const [draftConversationIds, setDraftConversationIds] = useState([]);
+  const [deletingConversationId, setDeletingConversationId] = useState("");
+  const [conversationsLoading, setConversationsLoading] = useState(false);
+  const [openMenuConversationId, setOpenMenuConversationId] = useState("");
+  const messagesRef = useRef(null);
+  const menuWrapRefs = useRef({});
+  const skipNextHistoryReloadRef = useRef("");
 
   const protocolQuestionList = useMemo(() => {
     if (mode === "anxiety") return ANXIETY_QUESTIONS;
@@ -70,19 +78,37 @@ export default function ChatWorkspace({ mode = "general" }) {
   }, [mode]);
 
   const isGeneralMode = mode === "general";
-  const conversationId = activeConversationId || "default";
+  const conversationId = isGeneralMode ? activeConversationId : "default";
+  const isDraftConversation =
+    isGeneralMode && conversationId ? draftConversationIds.includes(conversationId) : false;
 
   useEffect(() => {
+    let cancelled = false;
     const init = async () => {
       if (!user?.user_id) {
-        setMessages([{ role: "assistant", content: config.greeting }]);
-        setLoadingHistory(false);
+        if (!cancelled) {
+          setMessages([{ role: "assistant", content: config.greeting }]);
+          setLoadingHistory(false);
+        }
         return;
       }
 
       if (!isGeneralMode) {
-        setActiveConversationId("default");
+        if (!cancelled) {
+          setActiveConversationId("default");
+        }
         return;
+      }
+
+      const draftId = createConversationId();
+      if (!cancelled) {
+        setActiveConversationId(draftId);
+        setMessages([{ role: "assistant", content: config.greeting }]);
+        setConversations([{ conversation_id: draftId, title: "New chat", updated_at: "" }]);
+        setDraftConversationIds([draftId]);
+        setLoadingHistory(false);
+        setHistoryError("");
+        setConversationsLoading(true);
       }
 
       try {
@@ -90,36 +116,75 @@ export default function ChatWorkspace({ mode = "general" }) {
           `${API_URL}/chat/conversations?user_id=${encodeURIComponent(user.user_id)}&mode=general`,
         );
         const data = await res.json();
+        if (cancelled) return;
         if (res.ok && Array.isArray(data.conversations) && data.conversations.length > 0) {
-          setConversations(data.conversations);
-          setActiveConversationId(data.conversations[0].conversation_id);
-        } else {
-          const id = createConversationId();
-          setConversations([{ conversation_id: id, title: "New chat", updated_at: "" }]);
-          setActiveConversationId(id);
+          setConversations((prev) => {
+            const existingIds = new Set(prev.map((item) => item.conversation_id));
+            const additions = data.conversations.filter(
+              (item) => !existingIds.has(item.conversation_id),
+            );
+            return [...prev, ...additions];
+          });
         }
       } catch {
-        const id = createConversationId();
-        setConversations([{ conversation_id: id, title: "New chat", updated_at: "" }]);
-        setActiveConversationId(id);
+        // Keep draft chat as fallback.
+      } finally {
+        if (!cancelled) {
+          setConversationsLoading(false);
+        }
       }
     };
 
     init();
+    return () => {
+      cancelled = true;
+    };
   }, [user?.user_id, isGeneralMode, config.greeting]);
 
   useEffect(() => {
+    if (!messagesRef.current) return;
+    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [messages, loading, loadingHistory]);
+
+  useEffect(() => {
+    const handleOutsideClick = (event) => {
+      if (!openMenuConversationId) return;
+      const activeWrap = menuWrapRefs.current[openMenuConversationId];
+      if (activeWrap && !activeWrap.contains(event.target)) {
+        setOpenMenuConversationId("");
+      }
+    };
+
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [openMenuConversationId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
     const loadHistory = async () => {
-      if (!user?.user_id || !conversationId) {
+      if (!user?.user_id || (isGeneralMode && !conversationId)) {
         setMessages([{ role: "assistant", content: config.greeting }]);
         setLoadingHistory(false);
         return;
       }
+      if (isGeneralMode && isDraftConversation) {
+        setLoadingHistory(false);
+        setHistoryError("");
+        return;
+      }
+      if (isGeneralMode && skipNextHistoryReloadRef.current === conversationId) {
+        skipNextHistoryReloadRef.current = "";
+        setLoadingHistory(false);
+        setHistoryError("");
+        return;
+      }
 
       setLoadingHistory(true);
+      setHistoryError("");
       try {
         const res = await fetch(
           `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(conversationId)}`,
+          { signal: controller.signal },
         );
         const data = await res.json();
         if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
@@ -127,7 +192,9 @@ export default function ChatWorkspace({ mode = "general" }) {
         } else {
           setMessages([{ role: "assistant", content: config.greeting }]);
         }
-      } catch {
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+        setHistoryError("Could not load chat history. Showing a fresh chat view.");
         setMessages([{ role: "assistant", content: config.greeting }]);
       } finally {
         setLoadingHistory(false);
@@ -135,12 +202,13 @@ export default function ChatWorkspace({ mode = "general" }) {
     };
 
     loadHistory();
-  }, [user?.user_id, mode, conversationId, config.greeting]);
+    return () => controller.abort();
+  }, [user?.user_id, mode, conversationId, config.greeting, isGeneralMode, isDraftConversation]);
 
   const persistMessage = async (msg) => {
     if (!user?.user_id) return;
     try {
-      await fetch(`${API_URL}/chat/messages`, {
+      const res = await fetch(`${API_URL}/chat/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -151,9 +219,60 @@ export default function ChatWorkspace({ mode = "general" }) {
           content: msg.content,
         }),
       });
+      if (res.ok && isGeneralMode && conversationId) {
+        setDraftConversationIds((prev) => prev.filter((id) => id !== conversationId));
+        skipNextHistoryReloadRef.current = conversationId;
+      }
     } catch {
       // Keep UI responsive even if persistence fails.
     }
+  };
+
+  const createAndSelectDraftConversation = () => {
+    const id = createConversationId();
+    setActiveConversationId(id);
+    setConversations((prev) => [{ conversation_id: id, title: "New chat", updated_at: "" }, ...prev]);
+    setDraftConversationIds((prev) => [id, ...prev]);
+    setMessages([{ role: "assistant", content: config.greeting }]);
+    setHistoryError("");
+    setLoadingHistory(false);
+    return id;
+  };
+
+  const deleteConversation = async (targetConversationId) => {
+    if (!isGeneralMode || !targetConversationId || !user?.user_id) return;
+
+    const confirmed = window.confirm("Delete this chat conversation permanently?");
+    if (!confirmed) return;
+
+    setDeletingConversationId(targetConversationId);
+    const isDraft = draftConversationIds.includes(targetConversationId);
+
+    if (!isDraft) {
+      try {
+        await fetch(
+          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(targetConversationId)}`,
+          { method: "DELETE" },
+        );
+      } catch {
+        setDeletingConversationId("");
+        return;
+      }
+    }
+
+    const remaining = conversations.filter((item) => item.conversation_id !== targetConversationId);
+    setConversations(remaining);
+    setDraftConversationIds((prev) => prev.filter((id) => id !== targetConversationId));
+
+    if (conversationId === targetConversationId) {
+      if (remaining.length > 0) {
+        setActiveConversationId(remaining[0].conversation_id);
+      } else {
+        createAndSelectDraftConversation();
+      }
+    }
+    setDeletingConversationId("");
+    setOpenMenuConversationId("");
   };
 
   const updateConversationPreview = (latestText) => {
@@ -243,10 +362,11 @@ export default function ChatWorkspace({ mode = "general" }) {
 
   const clearChat = async () => {
     if (isGeneralMode) {
-      const id = createConversationId();
-      setActiveConversationId(id);
-      setConversations((prev) => [{ conversation_id: id, title: "New chat", updated_at: "" }, ...prev]);
-      setMessages([{ role: "assistant", content: config.greeting }]);
+      const hasUserMessage = messages.some((msg) => msg.role === "user");
+      if (!hasUserMessage) {
+        return;
+      }
+      createAndSelectDraftConversation();
       return;
     }
 
@@ -277,19 +397,69 @@ export default function ChatWorkspace({ mode = "general" }) {
         {isGeneralMode && (
           <div className="conversation-list">
             <p className="conversation-title">Recent Chats</p>
-            {conversations.map((item) => (
-              <button
+            {conversationsLoading && (
+              <p className="conversation-loading">Loading chats...</p>
+            )}
+            {conversations.map((item, idx) => (
+              <div
                 key={item.conversation_id}
-                type="button"
                 className={
                   item.conversation_id === conversationId
-                    ? "conversation-item active"
-                    : "conversation-item"
+                    ? "conversation-item-row active"
+                    : "conversation-item-row"
                 }
-                onClick={() => setActiveConversationId(item.conversation_id)}
               >
-                {item.title || "New chat"}
-              </button>
+                <button
+                  type="button"
+                  className="conversation-item"
+                  onClick={() => setActiveConversationId(item.conversation_id)}
+                >
+                  {item.title || "New chat"}
+                </button>
+                <div
+                  className="conversation-menu-wrap"
+                  ref={(el) => {
+                    if (el) {
+                      menuWrapRefs.current[item.conversation_id] = el;
+                    } else {
+                      delete menuWrapRefs.current[item.conversation_id];
+                    }
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="conversation-menu-toggle"
+                    onClick={() =>
+                      setOpenMenuConversationId((prev) =>
+                        prev === item.conversation_id ? "" : item.conversation_id,
+                      )
+                    }
+                    aria-label="Open chat options"
+                  >
+                    ...
+                  </button>
+                  {openMenuConversationId === item.conversation_id && (
+                    <div
+                      className={
+                        idx >= conversations.length - 2
+                          ? "conversation-menu conversation-menu-up"
+                          : "conversation-menu"
+                      }
+                    >
+                      <button
+                        type="button"
+                        className="conversation-menu-delete"
+                        onClick={() => deleteConversation(item.conversation_id)}
+                        disabled={deletingConversationId === item.conversation_id}
+                      >
+                        {deletingConversationId === item.conversation_id
+                          ? "Deleting..."
+                          : "Delete chat"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -304,7 +474,13 @@ export default function ChatWorkspace({ mode = "general" }) {
           <span className="mode-tag">{config.tag}</span>
         </header>
 
-        <div className="chat-messages">
+        <div className="chat-messages" ref={messagesRef}>
+          {historyError && (
+            <div className="msg assistant">
+              <div className="msg-role">System</div>
+              <p>{historyError}</p>
+            </div>
+          )}
           {loadingHistory && (
             <div className="msg assistant">
               <div className="msg-role">Assistant</div>

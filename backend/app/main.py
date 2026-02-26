@@ -311,20 +311,21 @@ async def chat_history(
     mode: Literal["general", "anxiety", "depression"],
     conversation_id: str | None = None,
 ):
-    conversation_filter = ""
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
+    params = {
+        "user_id": f"eq.{user_id}",
+        "mode": f"eq.{mode}",
+        "select": "role,content,created_at",
+        "order": "created_at.asc",
+    }
     if conversation_id:
-        conversation_filter = f"&conversation_id=eq.{conversation_id}"
+        params["conversation_id"] = f"eq.{conversation_id}"
 
-    url = (
-        f"{SUPABASE_URL}/rest/v1/chat_messages"
-        f"?user_id=eq.{user_id}&mode=eq.{mode}{conversation_filter}"
-        "&select=role,content,created_at&order=created_at.asc"
-    )
     headers = _supabase_service_headers()
 
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers, timeout=10.0)
+            res = await client.get(url, headers=headers, params=params, timeout=10.0)
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -383,20 +384,20 @@ async def delete_chat_history(
     mode: Literal["general", "anxiety", "depression"],
     conversation_id: str | None = None,
 ):
-    conversation_filter = ""
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
+    params = {
+        "user_id": f"eq.{user_id}",
+        "mode": f"eq.{mode}",
+    }
     if conversation_id:
-        conversation_filter = f"&conversation_id=eq.{conversation_id}"
+        params["conversation_id"] = f"eq.{conversation_id}"
 
-    url = (
-        f"{SUPABASE_URL}/rest/v1/chat_messages"
-        f"?user_id=eq.{user_id}&mode=eq.{mode}{conversation_filter}"
-    )
     headers = _supabase_service_headers()
     headers["Prefer"] = "return=minimal"
 
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.delete(url, headers=headers, timeout=10.0)
+            res = await client.delete(url, headers=headers, params=params, timeout=10.0)
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -411,17 +412,19 @@ async def delete_chat_history(
 
 @app.get("/chat/conversations", response_model=ChatConversationsResponse)
 async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "depression"]):
-    url = (
-        f"{SUPABASE_URL}/rest/v1/chat_messages"
-        f"?user_id=eq.{user_id}&mode=eq.{mode}"
-        "&select=conversation_id,role,content,created_at"
-        "&order=created_at.desc"
-    )
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
+    params = {
+        "user_id": f"eq.{user_id}",
+        "mode": f"eq.{mode}",
+        "select": "conversation_id,role,content,created_at",
+        "order": "created_at.desc",
+        "limit": "1000",
+    }
     headers = _supabase_service_headers()
 
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get(url, headers=headers, timeout=10.0)
+            res = await client.get(url, headers=headers, params=params, timeout=10.0)
     except httpx.RequestError:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -435,25 +438,37 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
     if not isinstance(rows, list):
         return ChatConversationsResponse(conversations=[])
 
-    by_conversation: dict[str, ChatConversationItem] = {}
+    by_conversation: dict[str, dict] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
         convo_id = row.get("conversation_id") or "default"
-        if convo_id in by_conversation:
+        content = str(row.get("content") or "").strip()
+        row_role = row.get("role") or ""
+        row_created = row.get("created_at") or ""
+        existing = by_conversation.get(convo_id)
+        if not existing:
+            by_conversation[convo_id] = {
+                "updated_at": row_created,
+                "latest_content": content,
+                "latest_user_content": content if row_role == "user" else "",
+            }
             continue
 
-        content = str(row.get("content") or "").strip()
-        title = content[:48] + "..." if len(content) > 48 else content
-        if not title:
-            title = "New chat"
+        if not existing.get("latest_user_content") and row_role == "user" and content:
+            existing["latest_user_content"] = content
 
-        by_conversation[convo_id] = ChatConversationItem(
-            conversation_id=convo_id,
-            title=title,
-            updated_at=row.get("created_at") or "",
+    items: list[ChatConversationItem] = []
+    for convo_id, agg in by_conversation.items():
+        title_source = agg.get("latest_user_content") or agg.get("latest_content") or "New chat"
+        title = title_source[:48] + "..." if len(title_source) > 48 else title_source
+        items.append(
+            ChatConversationItem(
+                conversation_id=convo_id,
+                title=title,
+                updated_at=agg.get("updated_at") or "",
+            )
         )
 
-    items = list(by_conversation.values())
     items.sort(key=lambda item: item.updated_at, reverse=True)
     return ChatConversationsResponse(conversations=items)
