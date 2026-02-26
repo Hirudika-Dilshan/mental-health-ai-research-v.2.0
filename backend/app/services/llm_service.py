@@ -1,13 +1,18 @@
 import os
 from typing import Dict, List
 
-from groq import Groq
-
 
 class LLMService:
     """Service for handling LLM interactions via Groq."""
 
     def __init__(self):
+        try:
+            from groq import Groq
+        except ImportError as exc:
+            raise RuntimeError(
+                "Missing dependency 'groq'. Install it with: pip install groq"
+            ) from exc
+
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise RuntimeError("Missing GROQ_API_KEY in environment.")

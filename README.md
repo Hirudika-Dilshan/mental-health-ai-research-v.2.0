@@ -57,6 +57,8 @@ SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 SUPABASE_SERVICE_KEY=your_supabase_service_role_key
 SUPABASE_ANON_KEY=your_supabase_anon_key
 FRONTEND_URL=http://localhost:5173
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 Optional frontend env (`frontend/.env`):
@@ -97,6 +99,7 @@ Frontend default URL: `http://localhost:5173`
 - `GET /health` - Health check
 - `POST /register` - Create user (via Supabase admin API)
 - `POST /login` - Authenticate user and return tokens + profile info
+- `POST /chat/respond` - Generate LLM response using Groq
 
 ## Frontend Routes
 
@@ -110,6 +113,7 @@ Frontend default URL: `http://localhost:5173`
 ## Notes
 
 - Do not expose `SUPABASE_SERVICE_KEY` in frontend code.
+- Do not expose `GROQ_API_KEY` in frontend code.
 - This is a research prototype and not production-hardened.
 - CORS is restricted to `FRONTEND_URL` from backend env.
 - If you get `Cannot reach Supabase` / `502`, verify `SUPABASE_URL` exactly matches your Supabase project URL from `Settings -> API`.

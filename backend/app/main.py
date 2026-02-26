@@ -1,10 +1,13 @@
 import os
+from functools import lru_cache
+from typing import Literal
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
+from app.services.llm_service import LLMService
 
 load_dotenv()
 
@@ -53,6 +56,24 @@ class LoginResponse(BaseModel):
     name: str | None = None
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatRequest(BaseModel):
+    system_prompt: str = (
+        "You are a supportive mental health research assistant. "
+        "You are not a doctor, and you avoid diagnosis."
+    )
+    conversation_history: list[ChatMessage] = Field(default_factory=list)
+    user_message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
 def _safe_json(response: httpx.Response) -> dict:
     try:
         data = response.json()
@@ -72,6 +93,11 @@ def _is_duplicate_email(payload: dict) -> bool:
         or ("already" in joined and "exist" in joined)
         or ("already" in joined and "use" in joined)
     )
+
+
+@lru_cache(maxsize=1)
+def _get_llm_service() -> LLMService:
+    return LLMService()
 
 
 @app.get("/health")
@@ -212,3 +238,22 @@ async def login(body: LoginRequest):
         email=user["email"],
         name=name,
     )
+
+
+@app.post("/chat/respond", response_model=ChatResponse)
+async def chat_respond(body: ChatRequest):
+    try:
+        llm = _get_llm_service()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        )
+
+    history = [{"role": msg.role, "content": msg.content} for msg in body.conversation_history]
+    reply = llm.generate_response(
+        system_prompt=body.system_prompt,
+        conversation_history=history,
+        user_message=body.user_message,
+    )
+    return ChatResponse(reply=reply)
