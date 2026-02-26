@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "../context/useAuth";
 
 import "./ChatWorkspace.css";
 
@@ -47,15 +48,68 @@ const DEPRESSION_QUESTIONS = [
 
 export default function ChatWorkspace({ mode = "general" }) {
   const config = MODE_CONFIG[mode] || MODE_CONFIG.general;
+  const { user } = useAuth();
   const [messages, setMessages] = useState([{ role: "assistant", content: config.greeting }]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(true);
 
   const protocolQuestionList = useMemo(() => {
     if (mode === "anxiety") return ANXIETY_QUESTIONS;
     if (mode === "depression") return DEPRESSION_QUESTIONS;
     return [];
   }, [mode]);
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!user?.user_id) {
+        setMessages([{ role: "assistant", content: config.greeting }]);
+        setLoadingHistory(false);
+        return;
+      }
+
+      setLoadingHistory(true);
+      try {
+        const res = await fetch(
+          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}`,
+        );
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
+          const formatted = data.messages.map((msg) => ({
+            role: msg.role,
+            content: msg.content,
+          }));
+          setMessages(formatted);
+        } else {
+          setMessages([{ role: "assistant", content: config.greeting }]);
+        }
+      } catch {
+        setMessages([{ role: "assistant", content: config.greeting }]);
+      } finally {
+        setLoadingHistory(false);
+      }
+    };
+
+    loadHistory();
+  }, [user?.user_id, mode, config.greeting]);
+
+  const persistMessage = async (msg) => {
+    if (!user?.user_id) return;
+    try {
+      await fetch(`${API_URL}/chat/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user.user_id,
+          mode,
+          role: msg.role,
+          content: msg.content,
+        }),
+      });
+    } catch {
+      // Keep UI responsive even if persistence fails.
+    }
+  };
 
   const sendMessage = async (event) => {
     event.preventDefault();
@@ -66,6 +120,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     setInput("");
+    persistMessage(userMsg);
 
     if (mode === "general") {
       setLoading(true);
@@ -89,16 +144,19 @@ export default function ChatWorkspace({ mode = "general" }) {
         const assistantText = res.ok
           ? data.reply
           : data.detail || "Unable to get a response right now. Please try again.";
-        setMessages((prev) => [...prev, { role: "assistant", content: assistantText }]);
+        const assistantMsg = { role: "assistant", content: assistantText };
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage(assistantMsg);
       } catch {
+        const assistantMsg = {
+          role: "assistant",
+          content: "Network error while contacting the backend. Check API server and VITE_API_URL.",
+        };
         setMessages((prev) => [
           ...prev,
-          {
-            role: "assistant",
-            content:
-              "Network error while contacting the backend. Check API server and VITE_API_URL.",
-          },
+          assistantMsg,
         ]);
+        persistMessage(assistantMsg);
       } finally {
         setLoading(false);
       }
@@ -119,11 +177,24 @@ export default function ChatWorkspace({ mode = "general" }) {
         "Protocol placeholder active. You can continue chatting, and we will attach full protocol logic in later stages.";
     }
 
-    setMessages((prev) => [...prev, { role: "assistant", content: response }]);
+    const assistantMsg = { role: "assistant", content: response };
+    setMessages((prev) => [...prev, assistantMsg]);
+    persistMessage(assistantMsg);
   };
 
-  const clearChat = () => {
-    setMessages([{ role: "assistant", content: config.greeting }]);
+  const clearChat = async () => {
+    if (user?.user_id) {
+      try {
+        await fetch(
+          `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}`,
+          { method: "DELETE" },
+        );
+      } catch {
+        // Ignore delete failures; reset current UI anyway.
+      }
+    }
+    const reset = [{ role: "assistant", content: config.greeting }];
+    setMessages(reset);
   };
 
   return (
@@ -148,6 +219,12 @@ export default function ChatWorkspace({ mode = "general" }) {
         </header>
 
         <div className="chat-messages">
+          {loadingHistory && (
+            <div className="msg assistant">
+              <div className="msg-role">Assistant</div>
+              <p>Loading previous chat...</p>
+            </div>
+          )}
           {messages.map((msg, idx) => (
             <div key={idx} className={msg.role === "user" ? "msg user" : "msg assistant"}>
               <div className="msg-role">{msg.role === "user" ? "You" : "Assistant"}</div>

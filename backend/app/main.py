@@ -74,6 +74,23 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class ChatPersistRequest(BaseModel):
+    user_id: str
+    mode: Literal["general", "anxiety", "depression"]
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: str | None = None
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[ChatHistoryItem]
+
+
 def _safe_json(response: httpx.Response) -> dict:
     try:
         data = response.json()
@@ -98,6 +115,14 @@ def _is_duplicate_email(payload: dict) -> bool:
 @lru_cache(maxsize=1)
 def _get_llm_service() -> LLMService:
     return LLMService()
+
+
+def _supabase_service_headers() -> dict:
+    return {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
 
 
 @app.get("/health")
@@ -257,3 +282,96 @@ async def chat_respond(body: ChatRequest):
         user_message=body.user_message,
     )
     return ChatResponse(reply=reply)
+
+
+@app.get("/chat/history", response_model=ChatHistoryResponse)
+async def chat_history(user_id: str, mode: Literal["general", "anxiety", "depression"]):
+    url = (
+        f"{SUPABASE_URL}/rest/v1/chat_messages"
+        f"?user_id=eq.{user_id}&mode=eq.{mode}"
+        "&select=role,content,created_at&order=created_at.asc"
+    )
+    headers = _supabase_service_headers()
+
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.get(url, headers=headers, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to reach Supabase while fetching chat history.",
+        )
+
+    if res.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch chat history: {res.text}",
+        )
+
+    rows = res.json()
+    messages: list[ChatHistoryItem] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                messages.append(
+                    ChatHistoryItem(
+                        role=row.get("role", "assistant"),
+                        content=row.get("content", ""),
+                        created_at=row.get("created_at"),
+                    )
+                )
+    return ChatHistoryResponse(messages=messages)
+
+
+@app.post("/chat/messages", status_code=status.HTTP_201_CREATED)
+async def chat_messages(body: ChatPersistRequest):
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages"
+    headers = _supabase_service_headers()
+    headers["Prefer"] = "return=minimal"
+    payload = {
+        "user_id": body.user_id,
+        "mode": body.mode,
+        "role": body.role,
+        "content": body.content,
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to reach Supabase while saving chat message.",
+        )
+
+    if res.status_code not in (200, 201):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to save chat message: {res.text}",
+        )
+
+    return {"message": "saved"}
+
+
+@app.delete("/chat/history")
+async def delete_chat_history(user_id: str, mode: Literal["general", "anxiety", "depression"]):
+    url = f"{SUPABASE_URL}/rest/v1/chat_messages?user_id=eq.{user_id}&mode=eq.{mode}"
+    headers = _supabase_service_headers()
+    headers["Prefer"] = "return=minimal"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.delete(url, headers=headers, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to reach Supabase while deleting chat history.",
+        )
+
+    if res.status_code not in (200, 204):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to delete chat history: {res.text}",
+        )
+
+    return {"message": "deleted"}
