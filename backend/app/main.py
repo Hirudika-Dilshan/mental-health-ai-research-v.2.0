@@ -94,8 +94,17 @@ async def register(body: RegisterRequest):
         "user_metadata": {"name": body.name or ""},
     }
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(url, headers=headers, json=payload, timeout=10.0)
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Cannot reach Supabase. Check SUPABASE_URL in backend/.env "
+                "(expected format: https://<project-ref>.supabase.co)."
+            ),
+        )
 
     if res.status_code == 422:
         raise HTTPException(
@@ -141,9 +150,18 @@ async def login(body: LoginRequest):
         "password": body.password,
     }
 
-    async with httpx.AsyncClient() as client:
-        token_res = await client.post(
-            token_url, headers=token_headers, json=token_payload, timeout=10.0
+    try:
+        async with httpx.AsyncClient() as client:
+            token_res = await client.post(
+                token_url, headers=token_headers, json=token_payload, timeout=10.0
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Cannot reach Supabase. Check SUPABASE_URL in backend/.env "
+                "(expected format: https://<project-ref>.supabase.co)."
+            ),
         )
 
     if token_res.status_code == 400:
@@ -169,8 +187,17 @@ async def login(body: LoginRequest):
         "Authorization": f"Bearer {access_token}",
     }
 
-    async with httpx.AsyncClient() as client:
-        profile_res = await client.get(profile_url, headers=profile_headers, timeout=10.0)
+    try:
+        async with httpx.AsyncClient() as client:
+            profile_res = await client.get(profile_url, headers=profile_headers, timeout=10.0)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Logged in, but failed to fetch profile from Supabase REST API. "
+                "Verify SUPABASE_URL and network access."
+            ),
+        )
 
     name = None
     if profile_res.status_code == 200:
