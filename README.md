@@ -7,7 +7,12 @@ Research-focused web application scaffold with a React frontend and FastAPI back
 This version currently includes:
 - User sign up and login flows
 - Supabase-backed authentication through a FastAPI API
-- Protected dashboard route in the frontend
+- Protected dashboard with direct action cards
+- Post-login routes for:
+  - Self Anxiety Test
+  - Depression Test
+  - General Chat
+- Profile section on the dashboard
 - Session-based auth state in the browser (`sessionStorage`)
 
 The broader research roadmap (assessment automation, anomaly detection, linguistic analysis) is captured in [`simplified_project.txt`](./simplified_project.txt).
@@ -93,11 +98,21 @@ Frontend default URL: `http://localhost:5173`
 - `POST /register` - Create user (via Supabase admin API)
 - `POST /login` - Authenticate user and return tokens + profile info
 
+## Frontend Routes
+
+- `/signup` - Registration page
+- `/login` - Login page
+- `/dashboard` - Main post-login home (action selection + profile)
+- `/anxiety-test` - Anxiety assessment page (UI scaffold)
+- `/depression-test` - Depression assessment page (UI scaffold)
+- `/general-chat` - General conversation page (UI scaffold)
+
 ## Notes
 
 - Do not expose `SUPABASE_SERVICE_KEY` in frontend code.
 - This is a research prototype and not production-hardened.
 - CORS is restricted to `FRONTEND_URL` from backend env.
+- If you get `Cannot reach Supabase` / `502`, verify `SUPABASE_URL` exactly matches your Supabase project URL from `Settings -> API`.
 
 ## Next Steps
 
