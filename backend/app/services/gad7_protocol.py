@@ -109,6 +109,7 @@ class GAD7Protocol:
         self.completed: bool = False
         self.terminal_reason: Optional[str] = None
         self.terminal_message: Optional[str] = None
+        self.assessment_saved: bool = False
 
     # ------------------------------------------------------------------
     # State serialisation
@@ -129,6 +130,7 @@ class GAD7Protocol:
             "completed": self.completed,
             "terminal_reason": self.terminal_reason,
             "terminal_message": self.terminal_message,
+            "assessment_saved": self.assessment_saved,
         }
 
     def load_state(self, state: Dict):
@@ -145,6 +147,7 @@ class GAD7Protocol:
         self.completed = state.get("completed", False)
         self.terminal_reason = state.get("terminal_reason")
         self.terminal_message = state.get("terminal_message")
+        self.assessment_saved = state.get("assessment_saved", False)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -371,6 +374,16 @@ class GAD7Protocol:
 
     def _advance_after_skip(self) -> Dict:
         """Skip current question: record null, move forward."""
+        if self.revisiting_skipped:
+            return {
+                "reply": (
+                    "This item still needs an answer before scoring can continue.\n"
+                    "Please answer Yes or No.\n\n"
+                    f"{self.get_current_question()}"
+                ),
+                "completed": False,
+            }
+
         skipped_q = self.current_question
         self.responses[self.current_question] = None
         if not self.revisiting_skipped:
@@ -394,6 +407,23 @@ class GAD7Protocol:
                     ),
                     "completed": False,
                 }
+            # Hard stop: do not complete/scoring until every question has an answer.
+            remaining_unanswered = [
+                q["number"]
+                for q in self.QUESTIONS
+                if self.responses.get(q["number"], "__missing__") is None
+            ]
+            if remaining_unanswered:
+                self.current_question = remaining_unanswered[0]
+                return {
+                    "reply": (
+                        "Before scoring, all questions must be answered.\n"
+                        "Please answer this item with Yes or No.\n\n"
+                        f"{self.get_current_question()}"
+                    ),
+                    "completed": False,
+                }
+
             self.completed = True
             self.terminal_reason = "completed"
             self.terminal_message = self.get_completion_message()

@@ -289,6 +289,83 @@ async def _delete_gad7_session_row(user_id: str, conversation_id: str):
         print(f"[GAD7] reset DB row warning: {exc}")
 
 
+def _extract_gad7_question_scores(responses: dict) -> dict:
+    scores: Dict[int, Optional[int]] = {}
+    for q_num in range(1, 8):
+        raw_value = responses.get(q_num)
+        if raw_value is None:
+            raw_value = responses.get(str(q_num))
+        scores[q_num] = raw_value if isinstance(raw_value, int) else None
+    return scores
+
+
+def _build_gad7_assessment_payload(
+    user_id: str,
+    conversation_id: str,
+    protocol: GAD7Protocol,
+    terminal_reason: Optional[str],
+    completed: bool,
+    crisis: bool,
+) -> Optional[dict]:
+    reason = (terminal_reason or "").strip().lower()
+
+    # Store only finalized outcomes needed for research table.
+    if reason == "completed" and completed and not crisis:
+        state = protocol.get_state()
+        scores = _extract_gad7_question_scores(state.get("responses", {}))
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "status": "completed",
+            "q1_score": scores[1],
+            "q2_score": scores[2],
+            "q3_score": scores[3],
+            "q4_score": scores[4],
+            "q5_score": scores[5],
+            "q6_score": scores[6],
+            "q7_score": scores[7],
+            "total_score": protocol.total_score,
+            "anxiety_level": protocol.calculate_severity(),
+            "assessed_at": datetime.utcnow().isoformat(),
+        }
+
+    if reason == "crisis" or crisis:
+        # Mid-session crisis: keep a record but with empty score fields.
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "status": "crisis_terminated",
+            "q1_score": None,
+            "q2_score": None,
+            "q3_score": None,
+            "q4_score": None,
+            "q5_score": None,
+            "q6_score": None,
+            "q7_score": None,
+            "total_score": None,
+            "anxiety_level": None,
+            "assessed_at": datetime.utcnow().isoformat(),
+        }
+
+    # Consent fail / withdrawn / excluded => no record.
+    return None
+
+
+async def _insert_gad7_assessment(payload: dict) -> bool:
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/gad7_assessments"
+        headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload, timeout=10.0)
+        if res.status_code not in (200, 201):
+            print(f"[GAD7] assessment insert warning: status={res.status_code} body={res.text[:400]}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"[GAD7] assessment insert warning: {exc}")
+        return False
+
+
 def _heuristic_gad7_intent(text: str) -> str:
     value = (text or "").strip().lower()
     if any(k in value for k in ["suicide", "kill myself", "want to die", "self harm", "hurt myself"]):
@@ -832,6 +909,27 @@ async def gad7_respond(body: GAD7Request):
     await _save_gad7_session(
         body.user_id, body.conversation_id, protocol, completed=completed
     )
+
+    # Persist finalized research outcome once per session.
+    if completed and not post_state.get("assessment_saved", False):
+        assessment_payload = _build_gad7_assessment_payload(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            protocol=protocol,
+            terminal_reason=terminal_reason,
+            completed=completed,
+            crisis=crisis,
+        )
+        if assessment_payload is not None:
+            saved = await _insert_gad7_assessment(assessment_payload)
+            protocol.assessment_saved = saved
+        else:
+            # Completed non-record outcomes (withdrawn/excluded) should not retry.
+            protocol.assessment_saved = True
+        post_state = protocol.get_state()
+        await _save_gad7_session(
+            body.user_id, body.conversation_id, protocol, completed=completed
+        )
 
     # Delete partial data if participant withdrew or was excluded
     if delete_partial:
