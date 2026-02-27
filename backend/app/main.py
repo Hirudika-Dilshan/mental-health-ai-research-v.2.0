@@ -287,29 +287,123 @@ async def _delete_gad7_session_row(user_id: str, conversation_id: str):
         print(f"[GAD7] reset DB row warning: {exc}")
 
 
-def _is_structured_protocol_input(text: str) -> bool:
+def _heuristic_gad7_intent(text: str) -> str:
     value = (text or "").strip().lower()
-    if value in {"yes", "y", "yeah", "yep", "ok", "okay", "no", "n", "nope", "1", "2", "3", "4"}:
-        return True
-    keywords = [
+    if any(k in value for k in ["suicide", "kill myself", "want to die", "self harm", "hurt myself"]):
+        return "crisis"
+    if any(k in value for k in ["stop", "exit", "quit", "end session"]):
+        return "withdraw"
+    if value in {"1", "2", "3", "4"}:
+        return f"freq_{value}"
+    if value in {"yes", "y", "yeah", "yep", "ok", "okay"}:
+        return "yes"
+    if value in {"no", "n", "nope"}:
+        return "no"
+    if "skip" in value:
+        return "skip"
+    if "back" in value:
+        return "back"
+    if "how many" in value and "question" in value:
+        return "meta_count"
+    if "why" in value and "ask" in value:
+        return "meta_why"
+    if "gad" in value:
+        return "meta_what"
+    if "example" in value:
+        return "example"
+    if "don't understand" in value or "dont understand" in value or "confused" in value:
+        return "confused"
+    if "because" in value or "reason" in value:
+        return "justification"
+    if "can you tell me if" in value or "am i anxious" in value or "how do i know" in value:
+        return "assessment"
+    return "normal"
+
+
+def _map_intent_to_protocol_text(intent: str, raw_text: str) -> str:
+    mapping = {
+        "yes": "yes",
+        "no": "no",
+        "freq_1": "1",
+        "freq_2": "2",
+        "freq_3": "3",
+        "freq_4": "4",
+        "skip": "skip",
+        "back": "back",
+        "meta_count": "how many questions are left?",
+        "meta_why": "why are you asking this?",
+        "meta_what": "what is gad-7?",
+        "confused": "i don't understand",
+        "example": "can you give me examples?",
+        "assessment": "can you tell me if i am anxious?",
+        "justification": "yes, but it's because of my situation",
+        "withdraw": "stop",
+        "crisis": "i want to die",
+        "off_topic": "what is the weather?",
+    }
+    return mapping.get(intent, raw_text)
+
+
+def _is_structured_intent(intent: str) -> bool:
+    return intent in {
+        "yes",
+        "no",
+        "freq_1",
+        "freq_2",
+        "freq_3",
+        "freq_4",
         "skip",
         "back",
-        "go back",
-        "stop",
-        "exit",
-        "quit",
-        "how many questions",
-        "what is gad",
-        "why are you asking",
-        "restart",
-    ]
-    return any(k in value for k in keywords)
+        "meta_count",
+        "meta_why",
+        "meta_what",
+        "confused",
+        "example",
+        "assessment",
+        "justification",
+        "withdraw",
+        "crisis",
+        "off_topic",
+    }
+
+
+def _classify_gad7_intent_with_ai(user_message: str, protocol_state: dict) -> str:
+    # AI-first classification for natural-language variants
+    system_prompt = (
+        "Classify the user's message into one intent label for a GAD-7 protocol.\n"
+        "Allowed labels only:\n"
+        "yes, no, freq_1, freq_2, freq_3, freq_4, skip, back, meta_count, meta_why, meta_what, "
+        "confused, example, assessment, justification, withdraw, crisis, off_topic, normal.\n"
+        "Return JSON only: {\"intent\":\"<label>\"}"
+    )
+    user_prompt = (
+        f"User message: {user_message}\n"
+        f"Protocol state: {json.dumps(protocol_state, ensure_ascii=False)}\n"
+        "Choose the single best label."
+    )
+    try:
+        llm = _get_llm_service()
+        raw = llm.generate_response(
+            system_prompt=system_prompt,
+            conversation_history=[],
+            user_message=user_prompt,
+        )
+        data = json.loads(raw)
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent:
+            return intent
+    except Exception:
+        pass
+
+    # Fallback heuristic only if AI parse fails.
+    return _heuristic_gad7_intent(user_message)
 
 
 # ── LLM conversational wrapper ─────────────────────────────────────────────
 
 def _build_gad7_conversational_reply(
     session_key: str,
+    intent: str,
     user_message: str,
     protocol_reply: str,
     completed: bool,
@@ -322,15 +416,25 @@ def _build_gad7_conversational_reply(
         return protocol_reply
 
     system_prompt = (
-        "You are a compassionate mental-health research assistant.\n"
-        "Write ONE short supportive line only (max 12 words), specific to the latest user text.\n"
-        "Avoid generic repeated encouragement. Do not use the exact phrase 'You're doing the best you can'.\n"
-        "No diagnosis. No safety advice. No instructions."
+        "CRITICAL RULES:\n"
+        "1. You are NOT a therapist or doctor. You are a screening tool.\n"
+        "2. NEVER diagnose or give medical advice.\n"
+        "3. Follow the exact GAD-7 protocol provided.\n"
+        "4. Be conversational but professional.\n"
+        "5. If user is confused, provide clarification gently.\n"
+        "6. If user goes off-topic, gently guide them back.\n"
+        "7. Watch for crisis keywords and respond appropriately.\n\n"
+        "YOUR TONE: Warm, supportive, non-judgmental, like a caring healthcare worker.\n\n"
+        "Task: Write a short conversational bridge (1-2 sentences) for this turn.\n"
+        "Then append the protocol text EXACTLY as given, unchanged.\n"
+        "Do not repeat generic phrases in multiple turns."
     )
     user_prompt = (
+        f"Detected intent: {intent}\n"
         f"User said: {user_message}\n"
-        f"Protocol stage completed: {completed}\n"
-        "Return only one brief empathetic sentence."
+        f"Completed: {completed}\n"
+        f"Protocol text to append EXACTLY:\n{protocol_reply}\n\n"
+        "Return final assistant message now."
     )
 
     try:
@@ -345,10 +449,11 @@ def _build_gad7_conversational_reply(
         ).strip()
         if not prefix:
             return protocol_reply
+        # Avoid identical full response repeats.
         if _last_gad7_prefix.get(session_key) == prefix:
             return protocol_reply
         _last_gad7_prefix[session_key] = prefix
-        return f"{prefix}\n\n{protocol_reply}"
+        return prefix
     except Exception:
         return protocol_reply
 
@@ -685,9 +790,14 @@ async def gad7_start(body: GAD7ResetRequest):
 async def gad7_respond(body: GAD7Request):
     # Load persisted state
     protocol = await _load_gad7_session(body.user_id, body.conversation_id)
+    pre_state = protocol.get_state()
+
+    # AI classifies user intent; protocol still enforces deterministic state transitions.
+    detected_intent = _classify_gad7_intent_with_ai(body.user_message, pre_state)
+    normalized_input = _map_intent_to_protocol_text(detected_intent, body.user_message)
 
     # Process input through the protocol state machine
-    result = protocol.process_user_input(body.user_message)
+    result = protocol.process_user_input(normalized_input)
 
     protocol_reply: str = result.get("reply", "")
     completed: bool = bool(result.get("completed", False))
@@ -697,11 +807,16 @@ async def gad7_respond(body: GAD7Request):
 
     # Optionally wrap with a short LLM empathy prefix
     session_key = f"{body.user_id}:{body.conversation_id}"
-    if _is_structured_protocol_input(body.user_message):
+    post_state = protocol.get_state()
+    # Lock state: when protocol expects one of the scoring options, keep replies strict.
+    is_locked_frequency_step = bool(post_state.get("awaiting_frequency")) or detected_intent.startswith("freq_")
+
+    if is_locked_frequency_step:
         final_reply = protocol_reply
     else:
         final_reply = _build_gad7_conversational_reply(
             session_key=session_key,
+            intent=detected_intent,
             user_message=body.user_message,
             protocol_reply=protocol_reply,
             completed=completed,
@@ -733,7 +848,7 @@ async def gad7_respond(body: GAD7Request):
         crisis=crisis,
         withdrawn=withdrawn,
         delete_partial=delete_partial,
-        state=protocol.get_state(),
+        state=post_state,
     )
 
 
