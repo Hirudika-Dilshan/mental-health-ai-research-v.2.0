@@ -61,6 +61,8 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [openMenuConversationId, setOpenMenuConversationId] = useState("");
   const [anxietyAwaitingFrequency, setAnxietyAwaitingFrequency] = useState(false);
+  const [anxietySessionLocked, setAnxietySessionLocked] = useState(false);
+  const [anxietyLockNotice, setAnxietyLockNotice] = useState("");
   const [showAnxietyOnboarding, setShowAnxietyOnboarding] = useState(false);
   const [anxietyIntake, setAnxietyIntake] = useState({
     age_18_plus: "yes",
@@ -82,6 +84,30 @@ export default function ChatWorkspace({ mode = "general" }) {
   const isDraftConversation =
     isGeneralMode && conversationId ? draftConversationIds.includes(conversationId) : false;
 
+  const inferAnxietyLockNotice = (terminalReason, completed) => {
+    if (terminalReason === "crisis") {
+      return "Session terminated for safety. No score result is shown. Please use the crisis resources above.";
+    }
+    if (terminalReason === "withdrawn" || terminalReason === "excluded") {
+      return "Session ended without a score result. Click New Chat to start a fresh session.";
+    }
+    if (completed) {
+      return "Session completed. Click New Chat to start a fresh session.";
+    }
+    return "";
+  };
+
+  const inferTerminalReasonFromText = (text) => {
+    const value = (text || "").toLowerCase();
+    if (value.includes("serious distress") || value.includes("not a crisis counselor")) {
+      return "crisis";
+    }
+    if (value.includes("only for adults (18+)")) return "excluded";
+    if (value.includes("we can stop here")) return "withdrawn";
+    if (value.includes("thank you for completing the gad-7 screening")) return "completed";
+    return "";
+  };
+
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
@@ -93,14 +119,16 @@ export default function ChatWorkspace({ mode = "general" }) {
         return;
       }
 
-      if (!isGeneralMode) {
-        if (!cancelled) {
-          setActiveConversationId("default");
-          setAnxietyAwaitingFrequency(false);
-          if (mode === "anxiety") {
-            setShowAnxietyOnboarding(true);
+        if (!isGeneralMode) {
+          if (!cancelled) {
+            setActiveConversationId("default");
+            setAnxietyAwaitingFrequency(false);
+            setAnxietySessionLocked(false);
+            setAnxietyLockNotice("");
+            if (mode === "anxiety") {
+              setShowAnxietyOnboarding(true);
+            }
           }
-        }
         return;
       }
 
@@ -151,13 +179,13 @@ export default function ChatWorkspace({ mode = "general" }) {
   }, [messages, loading, loadingHistory]);
 
   useEffect(() => {
-    if (mode === "anxiety" && anxietyAwaitingFrequency) return;
+    if (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) return;
     if (loading || loadingHistory || showAnxietyOnboarding) return;
     const id = window.requestAnimationFrame(() => {
       inputRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(id);
-  }, [messages, loading, loadingHistory, anxietyAwaitingFrequency, mode, showAnxietyOnboarding]);
+  }, [messages, loading, loadingHistory, anxietyAwaitingFrequency, anxietySessionLocked, mode, showAnxietyOnboarding]);
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -210,17 +238,33 @@ export default function ChatWorkspace({ mode = "general" }) {
               lastAssistant.content &&
               lastAssistant.content.toLowerCase().includes("please choose 1, 2, 3, or 4"),
             );
+            const inferredReason = inferTerminalReasonFromText(lastAssistant?.content || "");
             setAnxietyAwaitingFrequency(awaiting);
+            if (inferredReason) {
+              setAnxietySessionLocked(true);
+              setAnxietyLockNotice(inferAnxietyLockNotice(inferredReason, inferredReason === "completed"));
+            } else {
+              setAnxietySessionLocked(false);
+              setAnxietyLockNotice("");
+            }
           }
         } else {
           setMessages([{ role: "assistant", content: config.greeting }]);
-          if (mode === "anxiety") setAnxietyAwaitingFrequency(false);
+          if (mode === "anxiety") {
+            setAnxietyAwaitingFrequency(false);
+            setAnxietySessionLocked(false);
+            setAnxietyLockNotice("");
+          }
         }
       } catch (err) {
         if (err?.name === "AbortError") return;
         setHistoryError("Could not load chat history. Showing a fresh chat view.");
         setMessages([{ role: "assistant", content: config.greeting }]);
-        if (mode === "anxiety") setAnxietyAwaitingFrequency(false);
+        if (mode === "anxiety") {
+          setAnxietyAwaitingFrequency(false);
+          setAnxietySessionLocked(false);
+          setAnxietyLockNotice("");
+        }
       } finally {
         setLoadingHistory(false);
       }
@@ -331,13 +375,14 @@ export default function ChatWorkspace({ mode = "general" }) {
     event.preventDefault();
     const trimmed = input.trim();
     if (!trimmed || loading || loadingHistory) return;
-    if (mode === "anxiety" && anxietyAwaitingFrequency) return;
+    if (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) return;
 
     await submitUserText(trimmed);
   };
 
   const submitUserText = async (trimmed) => {
     if (!trimmed || loading || loadingHistory) return;
+    if (mode === "anxiety" && anxietySessionLocked) return;
 
     const userMsg = { role: "user", content: trimmed };
     const nextMessages = [...messages, userMsg];
@@ -402,9 +447,20 @@ export default function ChatWorkspace({ mode = "general" }) {
           ? data.reply
           : data.detail || "Unable to continue GAD-7 right now. Please try again.";
         const assistantMsg = { role: "assistant", content: assistantText };
+        const terminalReason = data?.terminal_reason || data?.state?.terminal_reason || "";
+        const completed = Boolean(data?.completed);
+        const shouldLock = Boolean(
+          completed &&
+            (terminalReason === "crisis" ||
+              terminalReason === "withdrawn" ||
+              terminalReason === "excluded" ||
+              terminalReason === "completed"),
+        );
         if (data?.delete_partial) {
           setMessages([{ role: "assistant", content: assistantText }]);
           setAnxietyAwaitingFrequency(false);
+          setAnxietySessionLocked(true);
+          setAnxietyLockNotice(inferAnxietyLockNotice(terminalReason || "withdrawn", completed));
           if (user?.user_id) {
             try {
               await fetch(
@@ -418,6 +474,14 @@ export default function ChatWorkspace({ mode = "general" }) {
           return;
         }
         setAnxietyAwaitingFrequency(Boolean(data?.state?.awaiting_frequency));
+        if (shouldLock) {
+          setAnxietySessionLocked(true);
+          setAnxietyLockNotice(inferAnxietyLockNotice(terminalReason, completed));
+          setAnxietyAwaitingFrequency(false);
+        } else {
+          setAnxietySessionLocked(false);
+          setAnxietyLockNotice("");
+        }
         persistMessage(userMsg);
         setMessages((prev) => [...prev, assistantMsg]);
         persistMessage(assistantMsg);
@@ -430,6 +494,8 @@ export default function ChatWorkspace({ mode = "general" }) {
         setMessages((prev) => [...prev, assistantMsg]);
         persistMessage(assistantMsg);
         setAnxietyAwaitingFrequency(false);
+        setAnxietySessionLocked(false);
+        setAnxietyLockNotice("");
       } finally {
         setLoading(false);
       }
@@ -479,6 +545,8 @@ export default function ChatWorkspace({ mode = "general" }) {
         // Best-effort reset; continue with local reset below.
       }
       setAnxietyAwaitingFrequency(false);
+      setAnxietySessionLocked(false);
+      setAnxietyLockNotice("");
       setShowAnxietyOnboarding(true);
     }
 
@@ -542,6 +610,16 @@ export default function ChatWorkspace({ mode = "general" }) {
 
       setMessages([{ role: "assistant", content: latestReply }]);
       setAnxietyAwaitingFrequency(latestAwaitingFrequency);
+      const inferredReason = inferTerminalReasonFromText(latestReply);
+      if (latestCompleted || inferredReason) {
+        const finalReason = inferredReason || "completed";
+        setAnxietySessionLocked(true);
+        setAnxietyLockNotice(inferAnxietyLockNotice(finalReason, true));
+        setAnxietyAwaitingFrequency(false);
+      } else {
+        setAnxietySessionLocked(false);
+        setAnxietyLockNotice("");
+      }
       setShowAnxietyOnboarding(false);
     } catch {
       setHistoryError("Could not initialize anxiety screening session. Please try again.");
@@ -745,18 +823,21 @@ export default function ChatWorkspace({ mode = "general" }) {
         </div>
 
         <form className="chat-input-row" onSubmit={sendMessage}>
-          {mode === "anxiety" && anxietyAwaitingFrequency && (
+          {mode === "anxiety" && anxietyLockNotice && (
+            <div className="anxiety-session-notice">{anxietyLockNotice}</div>
+          )}
+          {mode === "anxiety" && anxietyAwaitingFrequency && !anxietySessionLocked && (
             <div className="anxiety-frequency-bar">
-              <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory}>
+              <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory || anxietySessionLocked}>
                 1. Not at all
               </button>
-              <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory}>
+              <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory || anxietySessionLocked}>
                 2. Several days
               </button>
-              <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory}>
+              <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory || anxietySessionLocked}>
                 3. More than half the days
               </button>
-              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory}>
+              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory || anxietySessionLocked}>
                 4. Nearly every day
               </button>
             </div>
@@ -765,11 +846,17 @@ export default function ChatWorkspace({ mode = "general" }) {
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={mode === "anxiety" && anxietyAwaitingFrequency ? "Select one option above" : "Type your message..."}
+            placeholder={
+              mode === "anxiety" && anxietySessionLocked
+                ? "Session ended. Click New Chat to start again."
+                : mode === "anxiety" && anxietyAwaitingFrequency
+                  ? "Select one option above"
+                  : "Type your message..."
+            }
             aria-label="Type message"
-            disabled={loading || loadingHistory || (mode === "anxiety" && anxietyAwaitingFrequency)}
+            disabled={loading || loadingHistory || (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked))}
           />
-          <button type="submit" disabled={loading || loadingHistory || (mode === "anxiety" && anxietyAwaitingFrequency)}>
+          <button type="submit" disabled={loading || loadingHistory || (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked))}>
             Send
           </button>
         </form>

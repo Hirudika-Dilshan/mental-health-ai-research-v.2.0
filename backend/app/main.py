@@ -127,6 +127,8 @@ class GAD7Response(BaseModel):
     crisis: bool = False
     withdrawn: bool = False
     delete_partial: bool = False
+    no_result: bool = False
+    terminal_reason: Optional[str] = None
     state: dict
 
 
@@ -808,6 +810,8 @@ async def gad7_respond(body: GAD7Request):
     # Optionally wrap with a short LLM empathy prefix
     session_key = f"{body.user_id}:{body.conversation_id}"
     post_state = protocol.get_state()
+    no_result: bool = bool(result.get("no_result", False))
+    terminal_reason: Optional[str] = result.get("terminal_reason") or post_state.get("terminal_reason")
     # Lock state: when protocol expects one of the scoring options, keep replies strict.
     is_locked_frequency_step = bool(post_state.get("awaiting_frequency")) or detected_intent.startswith("freq_")
 
@@ -848,6 +852,8 @@ async def gad7_respond(body: GAD7Request):
         crisis=crisis,
         withdrawn=withdrawn,
         delete_partial=delete_partial,
+        no_result=no_result,
+        terminal_reason=terminal_reason,
         state=post_state,
     )
 

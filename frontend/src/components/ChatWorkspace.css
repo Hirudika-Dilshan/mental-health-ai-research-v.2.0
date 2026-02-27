@@ -403,6 +403,17 @@
   cursor: default;
 }
 
+.anxiety-session-notice {
+  grid-column: 1 / -1;
+  border: 1px solid #b9d2ee;
+  background: #eef5ff;
+  color: #1f4d7e;
+  border-radius: 10px;
+  padding: 9px 11px;
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
 .chat-input-row input {
   border: 1px solid #c9ddf7;
   border-radius: 10px;

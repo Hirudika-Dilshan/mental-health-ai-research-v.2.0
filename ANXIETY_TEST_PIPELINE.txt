@@ -1,0 +1,213 @@
+ANXIETY TEST FLOW - END-TO-END LOGIC (IMPLEMENTED)
+===================================================
+
+Project scope
+-------------
+This document explains what happens from the moment a user clicks "Anxiety Test" until session end.
+It covers:
+1) UI flow
+2) Backend protocol flow
+3) What is hard-coded vs AI-decided
+4) What is robust vs bypassable
+5) Technical stack and architecture
+
+
+1. ENTRY POINT (FRONTEND)
+-------------------------
+File: frontend/src/components/ChatWorkspace.jsx
+Mode: anxiety
+
+When user opens Anxiety Test:
+- UI mode switches to `anxiety`.
+- A setup modal appears (onboarding form) with 3 required yes/no fields:
+  1. age_18_plus
+  2. in_crisis
+  3. consent
+- User clicks "Start Session".
+
+On submit:
+- Frontend deletes prior anxiety history for current conversation (best effort).
+- Frontend calls POST /protocol/gad7/start (hard reset + fresh state).
+- Frontend then sends the 3 onboarding answers sequentially to POST /protocol/gad7/respond.
+- Final assistant reply from those 3 answers becomes the first visible message in chat.
+
+Important:
+- If onboarding leads to termination (crisis/no consent/under 18), chat is locked and no score result is shown.
+
+
+2. BACKEND SESSION LIFECYCLE
+----------------------------
+Main files:
+- backend/app/main.py
+- backend/app/services/gad7_protocol.py
+
+State storage:
+- Primary: Supabase table `gad7_sessions` (JSON protocol_state)
+- Cache: in-memory dictionary `_memory_sessions`
+
+Session APIs:
+- POST /protocol/gad7/start
+  - Clears old state (memory + Supabase row)
+  - Creates new GAD7Protocol instance
+  - Returns first screening question (age check)
+
+- POST /protocol/gad7/respond
+  - Loads session state
+  - Runs AI intent classification (with fallback heuristic)
+  - Maps intent to normalized protocol input
+  - Runs deterministic protocol state machine
+  - Optionally adds conversational prefix (when safe)
+  - Saves updated state
+  - Returns reply + state + terminal flags
+
+- POST /protocol/gad7/reset
+  - Hard reset of protocol state for that session
+
+
+3. PROTOCOL PIPELINE (DETERMINISTIC CORE)
+-----------------------------------------
+Protocol class: GAD7Protocol
+
+Stages:
+A) Screening stage
+- Step 0: "Are you 18 or older?" (Yes/No required)
+- Step 1: "Are you in crisis/actively suicidal?" (Yes/No required)
+- Step 2: Consent prompt (Yes/No required)
+
+Terminal outcomes in screening:
+- Under 18 -> excluded -> completed terminal (no score)
+- Crisis yes -> crisis terminal (no score)
+- Consent no -> withdrawn terminal (no score)
+
+B) Question stage (7 GAD-7 items)
+For each symptom question:
+1. Ask symptom question (expects Yes/No)
+2. If No -> score 0 and advance
+3. If Yes -> lock into frequency step
+4. Frequency step accepts only 1..4 or exact matching labels:
+   - 1 Not at all -> 0
+   - 2 Several days -> 1
+   - 3 More than half the days -> 2
+   - 4 Nearly every day -> 3
+
+C) Navigation / guardrails
+- `skip` -> question marked unanswered (None), revisited later
+- `back` -> moves back safely (with score correction)
+- confusion/example/meta/assessment/off-topic are handled with guardrail responses
+- numeric input during symptom yes/no stage is now blocked and clarified (must answer Yes/No first)
+
+D) Revisit skipped items
+- Before final completion, unanswered items are rebuilt and revisited once.
+- User can still skip again.
+
+E) Completion
+- If fully completed, computes total score and severity.
+- If terminated (crisis/withdrawn/excluded), returns terminal message and `no_result=true`.
+
+
+4. WHAT IS PREDEFINED IN CODE VS JUDGED BY AI
+---------------------------------------------
+Hard-coded / deterministic (code-bound):
+- Allowed protocol state transitions
+- Screening gates (age/crisis/consent)
+- GAD-7 question sequence
+- Scoring math and severity thresholds
+- Crisis/withdraw terminal behavior
+- Skip/back mechanics
+- Frequency lock behavior
+- No-result terminal semantics
+
+AI-involved (probabilistic):
+- Intent classification in /protocol/gad7/respond:
+  - user free text -> label (yes/no/confused/example/meta/etc.)
+- Optional conversational bridge prefix around protocol reply
+
+Safety fallback:
+- If AI classification fails/parses badly, heuristic classifier is used.
+- Protocol engine still enforces legal transitions.
+
+
+5. WHAT IS HARD TO BYPASS VS WHAT CAN BE BYPASSED
+-------------------------------------------------
+Strong / mostly bulletproof:
+- You cannot get a score after crisis termination if backend flags are respected.
+- You cannot complete flow without passing deterministic state machine.
+- Frequency scoring is constrained while `awaiting_frequency=true`.
+- Numeric junk during symptom yes/no no longer auto-advances.
+
+Bypassable with enough effort (current design limitations):
+- Because AI classifier runs before state machine input, unusual phrasing can still be mis-labeled.
+- If attacker directly calls APIs (not UI), they can spam malformed text and attempt edge-case transitions.
+- Session consistency depends on Supabase availability and correct table/schema configuration.
+- In-memory cache + DB persistence can diverge briefly during failures.
+- There is no cryptographic integrity layer on client-submitted text.
+
+Not fully bulletproof yet (recommended hardening):
+- Move to state-aware strict parser first, AI second (or AI only for non-critical intents).
+- Restrict intent mapping by state (e.g., disallow freq_* unless awaiting_frequency=true).
+- Add server-side rate limits + abuse detection.
+- Add signed session tokens and stricter auth checks per conversation.
+- Add formal protocol audit logs for research traceability.
+
+
+6. FRONTEND LOCKING RULES (ANXIETY MODE)
+-----------------------------------------
+Current behavior:
+- If awaiting frequency, input box is disabled and 4 fixed buttons appear.
+- If session is terminal (crisis/withdrawn/excluded/completed), input/send are locked.
+- A notice is shown (including no-result message for crisis/withdraw/excluded).
+- User must click New Chat to start a fresh session.
+
+
+7. DATA PERSISTENCE
+-------------------
+Chat messages:
+- Supabase table `chat_messages`
+- APIs: /chat/messages, /chat/history, /chat/conversations
+
+GAD protocol state:
+- Supabase table `gad7_sessions` (JSON state + score/completion fields)
+- Memory cache used for low-latency repeated access
+
+Privacy-related behavior:
+- For withdrawn/excluded flows, partial data delete is attempted.
+- Crisis flow is terminal and no score result is emitted.
+
+
+8. TECHNOLOGIES USED
+--------------------
+Frontend:
+- React (component state machine in ChatWorkspace)
+- CSS custom UI
+
+Backend:
+- FastAPI
+- Pydantic models
+- httpx for Supabase REST calls
+- dotenv for config
+
+AI layer:
+- LLMService abstraction (Groq model integration in your codebase)
+- Used for intent classification and optional conversational tone wrapping
+
+Data platform:
+- Supabase Auth (register/login)
+- Supabase PostgREST tables for chat and protocol state
+
+
+9. CURRENT RISK SUMMARY (RESEARCH CONTEXT)
+------------------------------------------
+Suitable for:
+- Research prototyping
+- Controlled conversational screening flow
+- Collecting structured GAD-7 responses with chat UX
+
+Not sufficient alone for:
+- Clinical diagnosis
+- Crisis intervention replacement
+- Adversarially secure production deployment
+
+
+10. ONE-LINE PIPELINE SUMMARY
+-----------------------------
+UI selects anxiety mode -> onboarding answers -> backend deterministic GAD-7 state machine (with AI-assisted intent normalization) -> strict scoring/terminal decisions -> persistent state/chat in Supabase -> locked terminal UI for crisis/withdraw/excluded/completed.

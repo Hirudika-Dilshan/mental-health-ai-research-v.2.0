@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional
+import re
 
 
 class GAD7Protocol:
@@ -101,9 +102,13 @@ class GAD7Protocol:
         self.screening_step: int = 0          # 0=age, 1=crisis, 2=consent
         self.responses: Dict[int, Optional[int]] = {}
         self.awaiting_frequency: bool = False  # True only after "yes" to symptom
+        self.revisiting_skipped: bool = False
+        self.skipped_queue: List[int] = []
         self.confusion_count: int = 0
         self.total_score: int = 0
         self.completed: bool = False
+        self.terminal_reason: Optional[str] = None
+        self.terminal_message: Optional[str] = None
 
     # ------------------------------------------------------------------
     # State serialisation
@@ -117,9 +122,13 @@ class GAD7Protocol:
             "screening_step": self.screening_step,
             "responses": self.responses,
             "awaiting_frequency": self.awaiting_frequency,
+            "revisiting_skipped": self.revisiting_skipped,
+            "skipped_queue": self.skipped_queue,
             "confusion_count": self.confusion_count,
             "total_score": self.total_score,
             "completed": self.completed,
+            "terminal_reason": self.terminal_reason,
+            "terminal_message": self.terminal_message,
         }
 
     def load_state(self, state: Dict):
@@ -129,9 +138,13 @@ class GAD7Protocol:
         self.screening_step = state.get("screening_step", 0)
         self.responses = state.get("responses", {})
         self.awaiting_frequency = state.get("awaiting_frequency", False)
+        self.revisiting_skipped = state.get("revisiting_skipped", False)
+        self.skipped_queue = state.get("skipped_queue", [])
         self.confusion_count = state.get("confusion_count", 0)
         self.total_score = state.get("total_score", 0)
         self.completed = state.get("completed", False)
+        self.terminal_reason = state.get("terminal_reason")
+        self.terminal_message = state.get("terminal_message")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -346,8 +359,7 @@ class GAD7Protocol:
         self.responses[self.current_question] = 0
         self.awaiting_frequency = False
         self.confusion_count = 0
-        self.current_question += 1
-        return self._check_completion()
+        return self._advance_to_next()
 
     def _record_frequency_and_advance(self, score: int) -> Dict:
         """User provided frequency after saying Yes: record score, move forward."""
@@ -355,31 +367,76 @@ class GAD7Protocol:
         self.total_score += score
         self.awaiting_frequency = False
         self.confusion_count = 0
-        self.current_question += 1
-        return self._check_completion()
+        return self._advance_to_next()
 
     def _advance_after_skip(self) -> Dict:
         """Skip current question: record null, move forward."""
+        skipped_q = self.current_question
         self.responses[self.current_question] = None
+        if not self.revisiting_skipped:
+            self.skipped_queue.append(skipped_q)
         self.awaiting_frequency = False
         self.confusion_count = 0
-        self.current_question += 1
-        result = self._check_completion()
+        result = self._advance_to_next()
         if not result.get("completed"):
             result["reply"] = f"No problem, we can skip that one.\n\n{self.get_current_question()}"
         return result
 
-    def _check_completion(self) -> Dict:
-        """Return completion dict if all 7 questions done, else next question."""
-        if self.current_question > 7:
+    def _advance_to_next(self) -> Dict:
+        """Advance to next question, revisiting skipped items before final completion."""
+        if self.revisiting_skipped:
+            if self.skipped_queue:
+                self.current_question = self.skipped_queue.pop(0)
+                return {
+                    "reply": (
+                        "Earlier you skipped this item. You can answer now or type 'skip' again.\n\n"
+                        f"{self.get_current_question()}"
+                    ),
+                    "completed": False,
+                }
             self.completed = True
+            self.terminal_reason = "completed"
+            self.terminal_message = self.get_completion_message()
             return {
-                "reply": self.get_completion_message(),
+                "reply": self.terminal_message,
                 "completed": True,
                 "severity": self.calculate_severity(),
                 "score": self.total_score,
             }
-        return {"reply": self.get_current_question(), "completed": False}
+
+        self.current_question += 1
+        if self.current_question <= 7:
+            return {"reply": self.get_current_question(), "completed": False}
+
+        # Rebuild skipped queue from recorded unanswered items as a safety net.
+        # This guarantees skipped questions get one revisit chance even if queue drifted.
+        unanswered = [
+            q["number"]
+            for q in self.QUESTIONS
+            if self.responses.get(q["number"], "__missing__") is None
+        ]
+        if unanswered:
+            self.revisiting_skipped = True
+            self.skipped_queue = unanswered
+            self.current_question = self.skipped_queue.pop(0)
+            return {
+                "reply": (
+                    "Before we finish, let's revisit skipped items. "
+                    "You can still type 'skip' if you prefer.\n\n"
+                    f"{self.get_current_question()}"
+                ),
+                "completed": False,
+            }
+
+        self.completed = True
+        self.terminal_reason = "completed"
+        self.terminal_message = self.get_completion_message()
+        return {
+            "reply": self.terminal_message,
+            "completed": True,
+            "severity": self.calculate_severity(),
+            "score": self.total_score,
+        }
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -393,6 +450,16 @@ class GAD7Protocol:
             if value == "restart":
                 self.reset()
                 return {"reply": self.get_age_screening(), "completed": False}
+            if self.terminal_reason in {"crisis", "withdrawn", "excluded"}:
+                return {
+                    "reply": self.terminal_message or self.get_crisis_message(),
+                    "completed": True,
+                    "crisis": self.terminal_reason == "crisis",
+                    "withdrawn": self.terminal_reason in {"withdrawn", "excluded"},
+                    "delete_partial": self.terminal_reason in {"withdrawn", "excluded"},
+                    "no_result": True,
+                    "terminal_reason": self.terminal_reason,
+                }
             return {
                 "reply": f"{self.get_completion_message()}\n\nType 'restart' to begin again.",
                 "completed": True,
@@ -401,17 +468,29 @@ class GAD7Protocol:
         # ── Universal: withdraw ───────────────────────────────────────
         if self.is_withdraw_request(text):
             self.completed = True
+            self.terminal_reason = "withdrawn"
+            self.terminal_message = self.get_withdraw_message()
             return {
-                "reply": self.get_withdraw_message(),
+                "reply": self.terminal_message,
                 "completed": True,
                 "withdrawn": True,
                 "delete_partial": True,
+                "no_result": True,
+                "terminal_reason": "withdrawn",
             }
 
         # ── Universal: crisis ─────────────────────────────────────────
         if self.check_crisis(text):
             self.completed = True
-            return {"reply": self.get_crisis_message(), "completed": True, "crisis": True}
+            self.terminal_reason = "crisis"
+            self.terminal_message = self.get_crisis_message()
+            return {
+                "reply": self.terminal_message,
+                "completed": True,
+                "crisis": True,
+                "no_result": True,
+                "terminal_reason": "crisis",
+            }
 
         # ── Universal: meta questions ─────────────────────────────────
         if self.is_meta_question(text):
@@ -440,11 +519,15 @@ class GAD7Protocol:
                     return {"reply": f"{self.get_age_screening()}\nPlease answer Yes or No."}
                 if not age_ok:
                     self.completed = True
+                    self.terminal_reason = "excluded"
+                    self.terminal_message = "This study is only for adults (18+). We will stop here. Thank you."
                     return {
-                        "reply": "This study is only for adults (18+). We will stop here. Thank you.",
+                        "reply": self.terminal_message,
                         "completed": True,
                         "withdrawn": True,
                         "delete_partial": True,
+                        "no_result": True,
+                        "terminal_reason": "excluded",
                     }
                 self.screening_step = 1
                 return {"reply": self.get_crisis_screening()}
@@ -456,7 +539,15 @@ class GAD7Protocol:
                     return {"reply": f"{self.get_crisis_screening()}\nPlease answer Yes or No."}
                 if in_crisis:
                     self.completed = True
-                    return {"reply": self.get_crisis_message(), "completed": True, "crisis": True}
+                    self.terminal_reason = "crisis"
+                    self.terminal_message = self.get_crisis_message()
+                    return {
+                        "reply": self.terminal_message,
+                        "completed": True,
+                        "crisis": True,
+                        "no_result": True,
+                        "terminal_reason": "crisis",
+                    }
                 self.screening_step = 2
                 return {"reply": self.get_consent_message()}
 
@@ -466,11 +557,15 @@ class GAD7Protocol:
                 return {"reply": f"{self.get_consent_message()}\nPlease answer Yes or No."}
             if not consent:
                 self.completed = True
+                self.terminal_reason = "withdrawn"
+                self.terminal_message = "No problem. We can stop here. Thank you for your time."
                 return {
-                    "reply": "No problem. We can stop here. Thank you for your time.",
+                    "reply": self.terminal_message,
                     "completed": True,
                     "withdrawn": True,
                     "delete_partial": True,
+                    "no_result": True,
+                    "terminal_reason": "withdrawn",
                 }
             self.consent_given = True
             self.screening_passed = True
@@ -570,11 +665,16 @@ class GAD7Protocol:
             # User did NOT experience this symptom → score 0, advance
             return self._record_no_and_advance()
 
-        # Try direct frequency input even before yes/no (e.g. user types "2" at symptom stage)
-        direct_score = self._parse_frequency(text)
-        if direct_score is not None:
-            # Treat as "yes + frequency in one go"
-            return self._record_frequency_and_advance(direct_score)
+        # If the user provides numeric input at symptom yes/no stage,
+        # do not advance. Ask them to confirm Yes/No first.
+        if re.search(r"\d", value):
+            return {
+                "reply": (
+                    "Please answer this symptom question with Yes or No first.\n\n"
+                    f"{self.get_current_question()}\n\n"
+                    "If you answer Yes, I will then show the 4 fixed frequency options."
+                )
+            }
 
         # Fallback guardrail
         return {"reply": self.get_guardrail_response()}
