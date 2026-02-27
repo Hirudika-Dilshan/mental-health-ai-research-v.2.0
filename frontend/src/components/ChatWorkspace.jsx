@@ -61,7 +61,14 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [openMenuConversationId, setOpenMenuConversationId] = useState("");
   const [anxietyAwaitingFrequency, setAnxietyAwaitingFrequency] = useState(false);
+  const [showAnxietyOnboarding, setShowAnxietyOnboarding] = useState(false);
+  const [anxietyIntake, setAnxietyIntake] = useState({
+    age_18_plus: "yes",
+    in_crisis: "no",
+    consent: "yes",
+  });
   const messagesRef = useRef(null);
+  const inputRef = useRef(null);
   const menuWrapRefs = useRef({});
   const skipNextHistoryReloadRef = useRef("");
 
@@ -90,6 +97,9 @@ export default function ChatWorkspace({ mode = "general" }) {
         if (!cancelled) {
           setActiveConversationId("default");
           setAnxietyAwaitingFrequency(false);
+          if (mode === "anxiety") {
+            setShowAnxietyOnboarding(true);
+          }
         }
         return;
       }
@@ -133,12 +143,21 @@ export default function ChatWorkspace({ mode = "general" }) {
     return () => {
       cancelled = true;
     };
-  }, [user?.user_id, isGeneralMode, config.greeting]);
+  }, [user?.user_id, isGeneralMode, config.greeting, mode]);
 
   useEffect(() => {
     if (!messagesRef.current) return;
     messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
   }, [messages, loading, loadingHistory]);
+
+  useEffect(() => {
+    if (mode === "anxiety" && anxietyAwaitingFrequency) return;
+    if (loading || loadingHistory || showAnxietyOnboarding) return;
+    const id = window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [messages, loading, loadingHistory, anxietyAwaitingFrequency, mode, showAnxietyOnboarding]);
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -460,6 +479,7 @@ export default function ChatWorkspace({ mode = "general" }) {
         // Best-effort reset; continue with local reset below.
       }
       setAnxietyAwaitingFrequency(false);
+      setShowAnxietyOnboarding(true);
     }
 
     if (user?.user_id) {
@@ -473,6 +493,61 @@ export default function ChatWorkspace({ mode = "general" }) {
       }
     }
     setMessages([{ role: "assistant", content: config.greeting }]);
+  };
+
+  const handleAnxietyOnboardingSubmit = async () => {
+    if (!user?.user_id) return;
+    setLoading(true);
+    setHistoryError("");
+    try {
+      const convId = conversationId || "default";
+
+      await fetch(
+        `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=anxiety&conversation_id=${encodeURIComponent(convId)}`,
+        { method: "DELETE" },
+      );
+
+      await fetch(`${API_URL}/protocol/gad7/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.user_id, conversation_id: convId }),
+      });
+
+      const answers = [
+        anxietyIntake.age_18_plus,
+        anxietyIntake.in_crisis,
+        anxietyIntake.consent,
+      ];
+
+      let latestReply = "Session started.";
+      let latestAwaitingFrequency = false;
+      let latestCompleted = false;
+
+      for (const answer of answers) {
+        const res = await fetch(`${API_URL}/protocol/gad7/respond`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user.user_id,
+            conversation_id: convId,
+            user_message: answer,
+          }),
+        });
+        const data = await res.json();
+        latestReply = res.ok ? data.reply : data.detail || "Failed to initialize anxiety session.";
+        latestAwaitingFrequency = Boolean(data?.state?.awaiting_frequency);
+        latestCompleted = Boolean(data?.completed);
+        if (latestCompleted) break;
+      }
+
+      setMessages([{ role: "assistant", content: latestReply }]);
+      setAnxietyAwaitingFrequency(latestAwaitingFrequency);
+      setShowAnxietyOnboarding(false);
+    } catch {
+      setHistoryError("Could not initialize anxiety screening session. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -558,6 +633,81 @@ export default function ChatWorkspace({ mode = "general" }) {
       </aside>
 
       <section className="chat-main">
+        {mode === "anxiety" && showAnxietyOnboarding && (
+          <div className="onboard-overlay">
+            <div className="onboard-card">
+              <h2>Anxiety Screening Setup</h2>
+              <p>
+                This is a research screening flow (GAD-7), not a diagnosis. Please confirm the
+                required items to begin.
+              </p>
+
+              <div className="onboard-field">
+                <label>Are you 18 or older?</label>
+                <div>
+                  <button
+                    type="button"
+                    className={anxietyIntake.age_18_plus === "yes" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, age_18_plus: "yes" }))}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    className={anxietyIntake.age_18_plus === "no" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, age_18_plus: "no" }))}
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+
+              <div className="onboard-field">
+                <label>Are you currently in a crisis or actively suicidal?</label>
+                <div>
+                  <button
+                    type="button"
+                    className={anxietyIntake.in_crisis === "yes" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, in_crisis: "yes" }))}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    className={anxietyIntake.in_crisis === "no" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, in_crisis: "no" }))}
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+
+              <div className="onboard-field">
+                <label>Do you consent to participate in this research screening?</label>
+                <div>
+                  <button
+                    type="button"
+                    className={anxietyIntake.consent === "yes" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, consent: "yes" }))}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    className={anxietyIntake.consent === "no" ? "onboard-opt active" : "onboard-opt"}
+                    onClick={() => setAnxietyIntake((s) => ({ ...s, consent: "no" }))}
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+
+              <button type="button" className="onboard-start" onClick={handleAnxietyOnboardingSubmit} disabled={loading}>
+                {loading ? "Starting..." : "Start Session"}
+              </button>
+            </div>
+          </div>
+        )}
         <header className="chat-header">
           <div>
             <h1>{config.title}</h1>
@@ -612,6 +762,7 @@ export default function ChatWorkspace({ mode = "general" }) {
             </div>
           )}
           <input
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={mode === "anxiety" && anxietyAwaitingFrequency ? "Select one option above" : "Type your message..."}
