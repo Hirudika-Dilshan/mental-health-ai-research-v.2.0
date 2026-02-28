@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
 
@@ -25,19 +25,12 @@ const MODE_CONFIG = {
   },
   depression: {
     title: "Depression Test Chat",
-    subtitle: "Guided protocol placeholder",
+    subtitle: "PHQ-9 guided protocol",
     tag: "Protocol",
-    greeting:
-      "Welcome to the depression test chat. This is a guided placeholder flow until the full protocol is implemented.",
+    greeting: "Before we begin, are you 18 or older? (Yes/No)",
     systemPrompt: "",
   },
 };
-
-const DEPRESSION_QUESTIONS = [
-  "Over the last 2 weeks, how often have you had little interest or pleasure in doing things?",
-  "How often have you felt down, depressed, or hopeless?",
-  "How often have you had trouble sleeping or sleeping too much?",
-];
 
 function createConversationId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -63,7 +56,11 @@ export default function ChatWorkspace({ mode = "general" }) {
   const [anxietyAwaitingFrequency, setAnxietyAwaitingFrequency] = useState(false);
   const [anxietySessionLocked, setAnxietySessionLocked] = useState(false);
   const [anxietyLockNotice, setAnxietyLockNotice] = useState("");
+  const [depressionAwaitingFrequency, setDepressionAwaitingFrequency] = useState(false);
+  const [depressionSessionLocked, setDepressionSessionLocked] = useState(false);
+  const [depressionLockNotice, setDepressionLockNotice] = useState("");
   const [showAnxietyOnboarding, setShowAnxietyOnboarding] = useState(false);
+  const [showDepressionOnboarding, setShowDepressionOnboarding] = useState(false);
   const [anxietyIntake, setAnxietyIntake] = useState({
     age_18_plus: "yes",
     in_crisis: "no",
@@ -73,11 +70,6 @@ export default function ChatWorkspace({ mode = "general" }) {
   const inputRef = useRef(null);
   const menuWrapRefs = useRef({});
   const skipNextHistoryReloadRef = useRef("");
-
-  const protocolQuestionList = useMemo(() => {
-    if (mode === "depression") return DEPRESSION_QUESTIONS;
-    return [];
-  }, [mode]);
 
   const isGeneralMode = mode === "general";
   const conversationId = isGeneralMode ? activeConversationId : "default";
@@ -105,6 +97,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     if (value.includes("only for adults (18+)")) return "excluded";
     if (value.includes("we can stop here")) return "withdrawn";
     if (value.includes("thank you for completing the gad-7 screening")) return "completed";
+    if (value.includes("thank you for completing the phq-9 screening")) return "completed";
     return "";
   };
 
@@ -125,12 +118,19 @@ export default function ChatWorkspace({ mode = "general" }) {
             setAnxietyAwaitingFrequency(false);
             setAnxietySessionLocked(false);
             setAnxietyLockNotice("");
+            setDepressionAwaitingFrequency(false);
+            setDepressionSessionLocked(false);
+            setDepressionLockNotice("");
             if (mode === "anxiety") {
               setShowAnxietyOnboarding(true);
+              setShowDepressionOnboarding(false);
+            } else if (mode === "depression") {
+              setShowDepressionOnboarding(true);
+              setShowAnxietyOnboarding(false);
             }
           }
-        return;
-      }
+          return;
+        }
 
       const draftId = createConversationId();
       if (!cancelled) {
@@ -180,12 +180,24 @@ export default function ChatWorkspace({ mode = "general" }) {
 
   useEffect(() => {
     if (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) return;
-    if (loading || loadingHistory || showAnxietyOnboarding) return;
+    if (mode === "depression" && (depressionAwaitingFrequency || depressionSessionLocked)) return;
+    if (loading || loadingHistory || showAnxietyOnboarding || showDepressionOnboarding) return;
     const id = window.requestAnimationFrame(() => {
       inputRef.current?.focus();
     });
     return () => window.cancelAnimationFrame(id);
-  }, [messages, loading, loadingHistory, anxietyAwaitingFrequency, anxietySessionLocked, mode, showAnxietyOnboarding]);
+  }, [
+    messages,
+    loading,
+    loadingHistory,
+    anxietyAwaitingFrequency,
+    anxietySessionLocked,
+    depressionAwaitingFrequency,
+    depressionSessionLocked,
+    mode,
+    showAnxietyOnboarding,
+    showDepressionOnboarding,
+  ]);
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -231,21 +243,32 @@ export default function ChatWorkspace({ mode = "general" }) {
         if (res.ok && Array.isArray(data.messages) && data.messages.length > 0) {
           const formatted = data.messages.map((msg) => ({ role: msg.role, content: msg.content }));
           setMessages(formatted);
-          if (mode === "anxiety") {
+          if (mode === "anxiety" || mode === "depression") {
             const lastAssistant = [...formatted].reverse().find((m) => m.role === "assistant");
+            const lower = (lastAssistant?.content || "").toLowerCase();
             const awaiting = Boolean(
-              lastAssistant &&
-              lastAssistant.content &&
-              lastAssistant.content.toLowerCase().includes("please choose 1, 2, 3, or 4"),
+              lower.includes("please choose 1, 2, 3, or 4") ||
+              lower.includes("please choose 0, 1, 2, or 3"),
             );
             const inferredReason = inferTerminalReasonFromText(lastAssistant?.content || "");
-            setAnxietyAwaitingFrequency(awaiting);
-            if (inferredReason) {
-              setAnxietySessionLocked(true);
-              setAnxietyLockNotice(inferAnxietyLockNotice(inferredReason, inferredReason === "completed"));
+            if (mode === "anxiety") {
+              setAnxietyAwaitingFrequency(awaiting);
+              if (inferredReason) {
+                setAnxietySessionLocked(true);
+                setAnxietyLockNotice(inferAnxietyLockNotice(inferredReason, inferredReason === "completed"));
+              } else {
+                setAnxietySessionLocked(false);
+                setAnxietyLockNotice("");
+              }
             } else {
-              setAnxietySessionLocked(false);
-              setAnxietyLockNotice("");
+              setDepressionAwaitingFrequency(awaiting);
+              if (inferredReason) {
+                setDepressionSessionLocked(true);
+                setDepressionLockNotice(inferAnxietyLockNotice(inferredReason, inferredReason === "completed"));
+              } else {
+                setDepressionSessionLocked(false);
+                setDepressionLockNotice("");
+              }
             }
           }
         } else {
@@ -254,6 +277,10 @@ export default function ChatWorkspace({ mode = "general" }) {
             setAnxietyAwaitingFrequency(false);
             setAnxietySessionLocked(false);
             setAnxietyLockNotice("");
+          } else if (mode === "depression") {
+            setDepressionAwaitingFrequency(false);
+            setDepressionSessionLocked(false);
+            setDepressionLockNotice("");
           }
         }
       } catch (err) {
@@ -264,6 +291,10 @@ export default function ChatWorkspace({ mode = "general" }) {
           setAnxietyAwaitingFrequency(false);
           setAnxietySessionLocked(false);
           setAnxietyLockNotice("");
+        } else if (mode === "depression") {
+          setDepressionAwaitingFrequency(false);
+          setDepressionSessionLocked(false);
+          setDepressionLockNotice("");
         }
       } finally {
         setLoadingHistory(false);
@@ -376,6 +407,7 @@ export default function ChatWorkspace({ mode = "general" }) {
     const trimmed = input.trim();
     if (!trimmed || loading || loadingHistory) return;
     if (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) return;
+    if (mode === "depression" && (depressionAwaitingFrequency || depressionSessionLocked)) return;
 
     await submitUserText(trimmed);
   };
@@ -383,6 +415,7 @@ export default function ChatWorkspace({ mode = "general" }) {
   const submitUserText = async (trimmed) => {
     if (!trimmed || loading || loadingHistory) return;
     if (mode === "anxiety" && anxietySessionLocked) return;
+    if (mode === "depression" && depressionSessionLocked) return;
 
     const userMsg = { role: "user", content: trimmed };
     const nextMessages = [...messages, userMsg];
@@ -501,24 +534,76 @@ export default function ChatWorkspace({ mode = "general" }) {
       }
       return;
     }
-
-    const index = userTurnCount - 1;
-
-    let response = "Thanks. Your answer is noted.";
-    if (index < protocolQuestionList.length) {
-      response = protocolQuestionList[index];
-    } else if (index === protocolQuestionList.length) {
-      response =
-        "Thanks for your responses. In the next stage, this chat will run full scoring and interpretation.";
-    } else {
-      response =
-        "Protocol placeholder active. You can continue chatting, and we will attach full protocol logic in later stages.";
+    if (mode === "depression") {
+      setLoading(true);
+      try {
+        const res = await fetch(`${API_URL}/protocol/phq9/respond`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user?.user_id || "anonymous",
+            conversation_id: conversationId || "default",
+            user_message: trimmed,
+          }),
+        });
+        const data = await res.json();
+        const assistantText = res.ok
+          ? data.reply
+          : data.detail || "Unable to continue PHQ-9 right now. Please try again.";
+        const assistantMsg = { role: "assistant", content: assistantText };
+        const terminalReason = data?.terminal_reason || data?.state?.terminal_reason || "";
+        const completed = Boolean(data?.completed);
+        const shouldLock = Boolean(
+          completed &&
+            (terminalReason === "crisis" ||
+              terminalReason === "withdrawn" ||
+              terminalReason === "excluded" ||
+              terminalReason === "completed"),
+        );
+        if (data?.delete_partial) {
+          setMessages([{ role: "assistant", content: assistantText }]);
+          setDepressionAwaitingFrequency(false);
+          setDepressionSessionLocked(true);
+          setDepressionLockNotice(inferAnxietyLockNotice(terminalReason || "withdrawn", completed));
+          if (user?.user_id) {
+            try {
+              await fetch(
+                `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=depression&conversation_id=${encodeURIComponent(conversationId || "default")}`,
+                { method: "DELETE" },
+              );
+            } catch {
+              // Best effort delete.
+            }
+          }
+          return;
+        }
+        setDepressionAwaitingFrequency(Boolean(data?.state?.awaiting_frequency));
+        if (shouldLock) {
+          setDepressionSessionLocked(true);
+          setDepressionLockNotice(inferAnxietyLockNotice(terminalReason, completed));
+          setDepressionAwaitingFrequency(false);
+        } else {
+          setDepressionSessionLocked(false);
+          setDepressionLockNotice("");
+        }
+        persistMessage(userMsg);
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage(assistantMsg);
+      } catch {
+        const assistantMsg = {
+          role: "assistant",
+          content: "Network error while running PHQ-9 protocol. Please try again.",
+        };
+        persistMessage(userMsg);
+        setMessages((prev) => [...prev, assistantMsg]);
+        persistMessage(assistantMsg);
+        setDepressionAwaitingFrequency(false);
+        setDepressionSessionLocked(false);
+        setDepressionLockNotice("");
+      } finally {
+        setLoading(false);
+      }
     }
-
-    const assistantMsg = { role: "assistant", content: response };
-    persistMessage(userMsg);
-    setMessages((prev) => [...prev, assistantMsg]);
-    persistMessage(assistantMsg);
   };
 
   const clearChat = async () => {
@@ -548,6 +633,27 @@ export default function ChatWorkspace({ mode = "general" }) {
       setAnxietySessionLocked(false);
       setAnxietyLockNotice("");
       setShowAnxietyOnboarding(true);
+      setShowDepressionOnboarding(false);
+    }
+
+    if (mode === "depression" && user?.user_id) {
+      try {
+        await fetch(`${API_URL}/protocol/phq9/reset`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_id: user.user_id,
+            conversation_id: conversationId || "default",
+          }),
+        });
+      } catch {
+        // Best-effort reset; continue with local reset below.
+      }
+      setDepressionAwaitingFrequency(false);
+      setDepressionSessionLocked(false);
+      setDepressionLockNotice("");
+      setShowDepressionOnboarding(true);
+      setShowAnxietyOnboarding(false);
     }
 
     if (user?.user_id) {
@@ -569,13 +675,16 @@ export default function ChatWorkspace({ mode = "general" }) {
     setHistoryError("");
     try {
       const convId = conversationId || "default";
+      const isAnxiety = mode === "anxiety";
+      const protocolStartUrl = isAnxiety ? `${API_URL}/protocol/gad7/start` : `${API_URL}/protocol/phq9/start`;
+      const protocolRespondUrl = isAnxiety ? `${API_URL}/protocol/gad7/respond` : `${API_URL}/protocol/phq9/respond`;
 
       await fetch(
-        `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=anxiety&conversation_id=${encodeURIComponent(convId)}`,
+        `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(convId)}`,
         { method: "DELETE" },
       );
 
-      await fetch(`${API_URL}/protocol/gad7/start`, {
+      await fetch(protocolStartUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: user.user_id, conversation_id: convId }),
@@ -592,7 +701,7 @@ export default function ChatWorkspace({ mode = "general" }) {
       let latestCompleted = false;
 
       for (const answer of answers) {
-        const res = await fetch(`${API_URL}/protocol/gad7/respond`, {
+        const res = await fetch(protocolRespondUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -609,20 +718,36 @@ export default function ChatWorkspace({ mode = "general" }) {
       }
 
       setMessages([{ role: "assistant", content: latestReply }]);
-      setAnxietyAwaitingFrequency(latestAwaitingFrequency);
+      if (isAnxiety) {
+        setAnxietyAwaitingFrequency(latestAwaitingFrequency);
+      } else {
+        setDepressionAwaitingFrequency(latestAwaitingFrequency);
+      }
       const inferredReason = inferTerminalReasonFromText(latestReply);
       if (latestCompleted || inferredReason) {
         const finalReason = inferredReason || "completed";
-        setAnxietySessionLocked(true);
-        setAnxietyLockNotice(inferAnxietyLockNotice(finalReason, true));
-        setAnxietyAwaitingFrequency(false);
+        if (isAnxiety) {
+          setAnxietySessionLocked(true);
+          setAnxietyLockNotice(inferAnxietyLockNotice(finalReason, true));
+          setAnxietyAwaitingFrequency(false);
+        } else {
+          setDepressionSessionLocked(true);
+          setDepressionLockNotice(inferAnxietyLockNotice(finalReason, true));
+          setDepressionAwaitingFrequency(false);
+        }
       } else {
-        setAnxietySessionLocked(false);
-        setAnxietyLockNotice("");
+        if (isAnxiety) {
+          setAnxietySessionLocked(false);
+          setAnxietyLockNotice("");
+        } else {
+          setDepressionSessionLocked(false);
+          setDepressionLockNotice("");
+        }
       }
       setShowAnxietyOnboarding(false);
+      setShowDepressionOnboarding(false);
     } catch {
-      setHistoryError("Could not initialize anxiety screening session. Please try again.");
+      setHistoryError("Could not initialize protocol session. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -711,13 +836,14 @@ export default function ChatWorkspace({ mode = "general" }) {
       </aside>
 
       <section className="chat-main">
-        {mode === "anxiety" && showAnxietyOnboarding && (
+        {(mode === "anxiety" && showAnxietyOnboarding) ||
+        (mode === "depression" && showDepressionOnboarding) ? (
           <div className="onboard-overlay">
             <div className="onboard-card">
-              <h2>Anxiety Screening Setup</h2>
+              <h2>{mode === "anxiety" ? "Anxiety Screening Setup" : "Depression Screening Setup"}</h2>
               <p>
-                This is a research screening flow (GAD-7), not a diagnosis. Please confirm the
-                required items to begin.
+                This is a research screening flow ({mode === "anxiety" ? "GAD-7" : "PHQ-9"}), not
+                a diagnosis. Please confirm the required items to begin.
               </p>
 
               <div className="onboard-field">
@@ -785,7 +911,7 @@ export default function ChatWorkspace({ mode = "general" }) {
               </button>
             </div>
           </div>
-        )}
+        ) : null}
         <header className="chat-header">
           <div>
             <h1>{config.title}</h1>
@@ -826,6 +952,9 @@ export default function ChatWorkspace({ mode = "general" }) {
           {mode === "anxiety" && anxietyLockNotice && (
             <div className="anxiety-session-notice">{anxietyLockNotice}</div>
           )}
+          {mode === "depression" && depressionLockNotice && (
+            <div className="anxiety-session-notice">{depressionLockNotice}</div>
+          )}
           {mode === "anxiety" && anxietyAwaitingFrequency && !anxietySessionLocked && (
             <div className="anxiety-frequency-bar">
               <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory || anxietySessionLocked}>
@@ -842,6 +971,22 @@ export default function ChatWorkspace({ mode = "general" }) {
               </button>
             </div>
           )}
+          {mode === "depression" && depressionAwaitingFrequency && !depressionSessionLocked && (
+            <div className="anxiety-frequency-bar">
+              <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory || depressionSessionLocked}>
+                1. Not at all
+              </button>
+              <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory || depressionSessionLocked}>
+                2. Several days
+              </button>
+              <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory || depressionSessionLocked}>
+                3. More than half the days
+              </button>
+              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory || depressionSessionLocked}>
+                4. Nearly every day
+              </button>
+            </div>
+          )}
           <input
             ref={inputRef}
             value={input}
@@ -849,14 +994,31 @@ export default function ChatWorkspace({ mode = "general" }) {
             placeholder={
               mode === "anxiety" && anxietySessionLocked
                 ? "Session ended. Click New Chat to start again."
+                : mode === "depression" && depressionSessionLocked
+                  ? "Session ended. Click New Chat to start again."
                 : mode === "anxiety" && anxietyAwaitingFrequency
                   ? "Select one option above"
+                  : mode === "depression" && depressionAwaitingFrequency
+                    ? "Select one option above"
                   : "Type your message..."
             }
             aria-label="Type message"
-            disabled={loading || loadingHistory || (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked))}
+            disabled={
+              loading ||
+              loadingHistory ||
+              (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) ||
+              (mode === "depression" && (depressionAwaitingFrequency || depressionSessionLocked))
+            }
           />
-          <button type="submit" disabled={loading || loadingHistory || (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked))}>
+          <button
+            type="submit"
+            disabled={
+              loading ||
+              loadingHistory ||
+              (mode === "anxiety" && (anxietyAwaitingFrequency || anxietySessionLocked)) ||
+              (mode === "depression" && (depressionAwaitingFrequency || depressionSessionLocked))
+            }
+          >
             Send
           </button>
         </form>

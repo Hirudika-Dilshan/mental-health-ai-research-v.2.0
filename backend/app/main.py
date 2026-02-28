@@ -12,6 +12,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.services.gad7_protocol import GAD7Protocol
 from app.services.llm_service import LLMService
+from app.services.phq9_protocol import PHQ9Protocol
 
 load_dotenv()
 
@@ -209,6 +210,8 @@ def _build_conversation_title(user_messages: list[str], fallback: str) -> str:
 
 _memory_sessions: Dict[str, GAD7Protocol] = {}
 _last_gad7_prefix: Dict[str, str] = {}
+_memory_phq9_sessions: Dict[str, PHQ9Protocol] = {}
+_last_phq9_prefix: Dict[str, str] = {}
 
 
 async def _load_gad7_session(user_id: str, conversation_id: str) -> GAD7Protocol:
@@ -289,6 +292,78 @@ async def _delete_gad7_session_row(user_id: str, conversation_id: str):
         print(f"[GAD7] reset DB row warning: {exc}")
 
 
+async def _load_phq9_session(user_id: str, conversation_id: str) -> PHQ9Protocol:
+    key = f"{user_id}:{conversation_id}"
+    if key in _memory_phq9_sessions:
+        return _memory_phq9_sessions[key]
+
+    protocol = PHQ9Protocol()
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/phq9_sessions"
+        params = {"id": f"eq.{key}", "select": "protocol_state"}
+        async with httpx.AsyncClient() as client:
+            res = await client.get(
+                url, headers=_supabase_service_headers(), params=params, timeout=5.0
+            )
+        if res.status_code == 200:
+            rows = res.json()
+            if rows and isinstance(rows, list) and rows[0].get("protocol_state"):
+                protocol.load_state(rows[0]["protocol_state"])
+    except Exception as exc:
+        print(f"[PHQ9] state load warning: {exc}")
+
+    _memory_phq9_sessions[key] = protocol
+    return protocol
+
+
+async def _save_phq9_session(
+    user_id: str,
+    conversation_id: str,
+    protocol: PHQ9Protocol,
+    completed: bool = False,
+):
+    key = f"{user_id}:{conversation_id}"
+    _memory_phq9_sessions[key] = protocol
+
+    update_data = {
+        "id": key,
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+        "protocol_state": protocol.get_state(),
+        "total_score": protocol.total_score,
+        "severity_level": protocol.calculate_severity() if protocol.total_score is not None else None,
+        "protocol_completed": completed,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/phq9_sessions"
+        headers = _supabase_service_headers()
+        headers["Prefer"] = "resolution=merge-duplicates,return=minimal"
+        async with httpx.AsyncClient() as client:
+            await client.post(url, headers=headers, json=update_data, timeout=5.0)
+    except Exception as exc:
+        print(f"[PHQ9] state save warning: {exc}")
+
+
+def _reset_phq9_session(user_id: str, conversation_id: str):
+    key = f"{user_id}:{conversation_id}"
+    _memory_phq9_sessions.pop(key, None)
+    _last_phq9_prefix.pop(key, None)
+
+
+async def _delete_phq9_session_row(user_id: str, conversation_id: str):
+    key = f"{user_id}:{conversation_id}"
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/phq9_sessions"
+        params = {"id": f"eq.{key}"}
+        headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
+        async with httpx.AsyncClient() as client:
+            await client.delete(url, headers=headers, params=params, timeout=5.0)
+    except Exception as exc:
+        print(f"[PHQ9] reset DB row warning: {exc}")
+
+
 def _extract_gad7_question_scores(responses: dict) -> dict:
     scores: Dict[int, Optional[int]] = {}
     for q_num in range(1, 8):
@@ -363,6 +438,84 @@ async def _insert_gad7_assessment(payload: dict) -> bool:
         return True
     except Exception as exc:
         print(f"[GAD7] assessment insert warning: {exc}")
+        return False
+
+
+def _extract_phq9_question_scores(responses: dict) -> dict:
+    scores: Dict[int, Optional[int]] = {}
+    for q_num in range(1, 10):
+        raw_value = responses.get(q_num)
+        if raw_value is None:
+            raw_value = responses.get(str(q_num))
+        scores[q_num] = raw_value if isinstance(raw_value, int) else None
+    return scores
+
+
+def _build_phq9_assessment_payload(
+    user_id: str,
+    conversation_id: str,
+    protocol: PHQ9Protocol,
+    terminal_reason: Optional[str],
+    completed: bool,
+    crisis: bool,
+) -> Optional[dict]:
+    reason = (terminal_reason or "").strip().lower()
+
+    if reason == "completed" and completed and not crisis:
+        state = protocol.get_state()
+        scores = _extract_phq9_question_scores(state.get("responses", {}))
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "status": "completed",
+            "q1_score": scores[1],
+            "q2_score": scores[2],
+            "q3_score": scores[3],
+            "q4_score": scores[4],
+            "q5_score": scores[5],
+            "q6_score": scores[6],
+            "q7_score": scores[7],
+            "q8_score": scores[8],
+            "q9_score": scores[9],
+            "total_score": protocol.total_score,
+            "depression_level": protocol.calculate_severity(),
+            "assessed_at": datetime.utcnow().isoformat(),
+        }
+
+    if reason == "crisis" or crisis:
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "status": "crisis_terminated",
+            "q1_score": None,
+            "q2_score": None,
+            "q3_score": None,
+            "q4_score": None,
+            "q5_score": None,
+            "q6_score": None,
+            "q7_score": None,
+            "q8_score": None,
+            "q9_score": None,
+            "total_score": None,
+            "depression_level": None,
+            "assessed_at": datetime.utcnow().isoformat(),
+        }
+
+    return None
+
+
+async def _insert_phq9_assessment(payload: dict) -> bool:
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/phq9_assessments"
+        headers = {**_supabase_service_headers(), "Prefer": "return=minimal"}
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload, timeout=10.0)
+        if res.status_code not in (200, 201):
+            print(f"[PHQ9] assessment insert warning: status={res.status_code} body={res.text[:400]}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"[PHQ9] assessment insert warning: {exc}")
         return False
 
 
@@ -478,6 +631,103 @@ def _classify_gad7_intent_with_ai(user_message: str, protocol_state: dict) -> st
     return _heuristic_gad7_intent(user_message)
 
 
+def _heuristic_phq9_intent(text: str) -> str:
+    value = (text or "").strip().lower()
+    if any(k in value for k in ["suicide", "kill myself", "want to die", "self harm", "hurt myself"]):
+        return "crisis"
+    if any(k in value for k in ["stop", "exit", "quit", "end session"]):
+        return "withdraw"
+    if value in {"1", "2", "3", "4"}:
+        return f"freq_{value}"
+    if value in {"yes", "y", "yeah", "yep", "ok", "okay"}:
+        return "yes"
+    if value in {"no", "n", "nope"}:
+        return "no"
+    if "skip" in value:
+        return "skip"
+    if "back" in value:
+        return "back"
+    if "how many" in value and "question" in value:
+        return "meta_count"
+    if "why" in value and "ask" in value:
+        return "meta_why"
+    if "phq" in value:
+        return "meta_what"
+    if "example" in value:
+        return "example"
+    if (
+        "is that about" in value
+        or "what do you mean" in value
+        or "day or night" in value
+        or "not clear" in value
+    ):
+        return "confused"
+    if "don't understand" in value or "dont understand" in value or "confused" in value:
+        return "confused"
+    if "because" in value or "reason" in value:
+        return "justification"
+    if "can you tell me if" in value or "am i depressed" in value or "how do i know" in value:
+        return "assessment"
+    return "normal"
+
+
+def _map_phq9_intent_to_protocol_text(intent: str, raw_text: str) -> str:
+    mapping = {
+        "yes": "yes",
+        "no": "no",
+        "freq_1": "1",
+        "freq_2": "2",
+        "freq_3": "3",
+        "freq_4": "4",
+        "skip": "skip",
+        "back": "back",
+        "meta_count": "how many questions are left?",
+        "meta_why": "why are you asking this?",
+        "meta_what": "what is phq-9?",
+        "confused": "i don't understand",
+        "example": "can you give me examples?",
+        "assessment": "can you tell me if i am depressed?",
+        "justification": "yes, but it's because of my situation",
+        "withdraw": "stop",
+        "crisis": "i want to die",
+        "off_topic": "what is the weather?",
+    }
+    return mapping.get(intent, raw_text)
+
+
+def _classify_phq9_intent_with_ai(user_message: str, protocol_state: dict) -> str:
+    heuristic = _heuristic_phq9_intent(user_message)
+    if heuristic != "normal":
+        return heuristic
+
+    system_prompt = (
+        "Classify the user's message into one intent label for a PHQ-9 protocol.\n"
+        "Allowed labels only:\n"
+        "yes, no, freq_1, freq_2, freq_3, freq_4, skip, back, meta_count, meta_why, meta_what, "
+        "confused, example, assessment, justification, withdraw, crisis, off_topic, normal.\n"
+        "Return JSON only: {\"intent\":\"<label>\"}"
+    )
+    user_prompt = (
+        f"User message: {user_message}\n"
+        f"Protocol state: {json.dumps(protocol_state, ensure_ascii=False)}\n"
+        "Choose the single best label."
+    )
+    try:
+        llm = _get_llm_service()
+        raw = llm.generate_response(
+            system_prompt=system_prompt,
+            conversation_history=[],
+            user_message=user_prompt,
+        )
+        data = json.loads(raw)
+        intent = str(data.get("intent", "")).strip().lower()
+        if intent:
+            return intent
+    except Exception:
+        pass
+    return _heuristic_phq9_intent(user_message)
+
+
 # ── LLM conversational wrapper ─────────────────────────────────────────────
 
 def _build_gad7_conversational_reply(
@@ -532,6 +782,59 @@ def _build_gad7_conversational_reply(
         if _last_gad7_prefix.get(session_key) == prefix:
             return protocol_reply
         _last_gad7_prefix[session_key] = prefix
+        return prefix
+    except Exception:
+        return protocol_reply
+
+
+def _build_phq9_conversational_reply(
+    session_key: str,
+    intent: str,
+    user_message: str,
+    protocol_reply: str,
+    completed: bool,
+    crisis: bool,
+    withdrawn: bool,
+) -> str:
+    if crisis or withdrawn:
+        return protocol_reply
+
+    system_prompt = (
+        "CRITICAL RULES:\n"
+        "1. You are NOT a therapist or doctor. You are a screening tool.\n"
+        "2. NEVER diagnose or give medical advice.\n"
+        "3. Follow the exact PHQ-9 protocol provided.\n"
+        "4. Be conversational but professional.\n"
+        "5. If user is confused, provide clarification gently.\n"
+        "6. If user goes off-topic, gently guide them back.\n"
+        "7. Watch for crisis keywords and respond appropriately.\n\n"
+        "YOUR TONE: Warm, supportive, non-judgmental, like a caring healthcare worker.\n\n"
+        "Task: Write a short conversational bridge (1-2 sentences) for this turn.\n"
+        "Then append the protocol text EXACTLY as given, unchanged.\n"
+        "Do not repeat generic phrases in multiple turns."
+    )
+    user_prompt = (
+        f"Detected intent: {intent}\n"
+        f"User said: {user_message}\n"
+        f"Completed: {completed}\n"
+        f"Protocol text to append EXACTLY:\n{protocol_reply}\n\n"
+        "Return final assistant message now."
+    )
+    try:
+        llm = _get_llm_service()
+        prefix = (
+            llm.generate_response(
+                system_prompt=system_prompt,
+                conversation_history=[],
+                user_message=user_prompt,
+            )
+            or ""
+        ).strip()
+        if not prefix:
+            return protocol_reply
+        if _last_phq9_prefix.get(session_key) == prefix:
+            return protocol_reply
+        _last_phq9_prefix[session_key] = prefix
         return prefix
     except Exception:
         return protocol_reply
@@ -961,6 +1264,103 @@ async def gad7_reset(body: GAD7ResetRequest):
     """Hard reset: clears in-memory and DB state."""
     _reset_gad7_session(body.user_id, body.conversation_id)
     await _delete_gad7_session_row(body.user_id, body.conversation_id)
+    return {"message": "reset"}
+
+
+@app.post("/protocol/phq9/start")
+async def phq9_start(body: GAD7ResetRequest):
+    _reset_phq9_session(body.user_id, body.conversation_id)
+    await _delete_phq9_session_row(body.user_id, body.conversation_id)
+    protocol = PHQ9Protocol()
+    await _save_phq9_session(body.user_id, body.conversation_id, protocol)
+    return GAD7Response(
+        reply=protocol.get_age_screening(),
+        completed=False,
+        state=protocol.get_state(),
+    )
+
+
+@app.post("/protocol/phq9/respond", response_model=GAD7Response)
+async def phq9_respond(body: GAD7Request):
+    protocol = await _load_phq9_session(body.user_id, body.conversation_id)
+    pre_state = protocol.get_state()
+
+    detected_intent = _classify_phq9_intent_with_ai(body.user_message, pre_state)
+    normalized_input = _map_phq9_intent_to_protocol_text(detected_intent, body.user_message)
+    result = protocol.process_user_input(normalized_input)
+
+    protocol_reply: str = result.get("reply", "")
+    completed: bool = bool(result.get("completed", False))
+    crisis: bool = bool(result.get("crisis", False))
+    withdrawn: bool = bool(result.get("withdrawn", False))
+    delete_partial: bool = bool(result.get("delete_partial", False))
+
+    post_state = protocol.get_state()
+    no_result: bool = bool(result.get("no_result", False))
+    terminal_reason: Optional[str] = result.get("terminal_reason") or post_state.get("terminal_reason")
+    session_key = f"{body.user_id}:{body.conversation_id}"
+    is_locked_frequency_step = bool(post_state.get("awaiting_frequency")) or detected_intent.startswith("freq_")
+
+    if is_locked_frequency_step:
+        final_reply = protocol_reply
+    else:
+        final_reply = _build_phq9_conversational_reply(
+            session_key=session_key,
+            intent=detected_intent,
+            user_message=body.user_message,
+            protocol_reply=protocol_reply,
+            completed=completed,
+            crisis=crisis,
+            withdrawn=withdrawn,
+        )
+
+    await _save_phq9_session(body.user_id, body.conversation_id, protocol, completed=completed)
+
+    if completed and not post_state.get("assessment_saved", False):
+        assessment_payload = _build_phq9_assessment_payload(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            protocol=protocol,
+            terminal_reason=terminal_reason,
+            completed=completed,
+            crisis=crisis,
+        )
+        if assessment_payload is not None:
+            saved = await _insert_phq9_assessment(assessment_payload)
+            protocol.assessment_saved = saved
+        else:
+            protocol.assessment_saved = True
+        post_state = protocol.get_state()
+        await _save_phq9_session(body.user_id, body.conversation_id, protocol, completed=completed)
+
+    if delete_partial:
+        try:
+            await _delete_chat_history_rows(
+                user_id=body.user_id,
+                mode="depression",
+                conversation_id=body.conversation_id,
+            )
+        except Exception as exc:
+            print(f"[PHQ9] failed to delete partial data: {exc}")
+
+    return GAD7Response(
+        reply=final_reply,
+        completed=completed,
+        score=result.get("score"),
+        severity=result.get("severity"),
+        crisis=crisis,
+        withdrawn=withdrawn,
+        delete_partial=delete_partial,
+        no_result=no_result,
+        terminal_reason=terminal_reason,
+        state=post_state,
+    )
+
+
+@app.post("/protocol/phq9/reset")
+async def phq9_reset(body: GAD7ResetRequest):
+    _reset_phq9_session(body.user_id, body.conversation_id)
+    await _delete_phq9_session_row(body.user_id, body.conversation_id)
     return {"message": "reset"}
 
 

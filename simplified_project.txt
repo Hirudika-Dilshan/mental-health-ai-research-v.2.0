@@ -80,12 +80,12 @@ This is a **research prototype** to demonstrate:
 **Goal:** Get minimal working system for data collection
 
 **Tasks:**
-1. Set up simple React frontend (basic UI is fine)
-2. Set up FastAPI backend
-3. Set up Supabase
-4. Basic user registration/login (simple, no fancy validation)
-5. Simple chat interface (functional, not pretty)
-6. Store conversations in database
+1. Set up simple React frontend (basic UI is fine)1
+2. Set up FastAPI backend1
+3. Set up Supabase1
+4. Basic user registration/login (simple, no fancy validation)1
+5. Simple chat interface (functional, not pretty)1
+6. Store conversations in database1
 7. Deploy somewhere (doesn't matter where, just accessible)
 
 **Deliverable:** Working chat that stores data for research
@@ -114,10 +114,10 @@ This is a **research prototype** to demonstrate:
 **Goal:** Automated PHQ-9 and GAD-7 delivery
 
 **Tasks:**
-1. Implement PHQ-9 conversational flow
-2. Implement GAD-7 conversational flow
-3. Build scoring algorithms
-4. Store assessment results
+1. Implement PHQ-9 conversational flow1
+2. Implement GAD-7 conversational flow1
+3. Build scoring algorithms1
+4. Store assessment results1
 5. Simple results page (score + severity)
 6. **Test validity:** Compare conversational vs traditional format
 7. **Collect data:** Run with 10-20 test participants
