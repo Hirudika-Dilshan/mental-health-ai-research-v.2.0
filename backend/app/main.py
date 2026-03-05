@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime
@@ -120,6 +121,14 @@ class GAD7ResetRequest(BaseModel):
     conversation_id: str = "default"
 
 
+class ProtocolBootstrapRequest(BaseModel):
+    user_id: str
+    conversation_id: str = "default"
+    age_18_plus: bool
+    in_crisis: bool
+    consent: bool
+
+
 class GAD7Response(BaseModel):
     reply: str
     completed: bool = False
@@ -131,6 +140,18 @@ class GAD7Response(BaseModel):
     no_result: bool = False
     terminal_reason: Optional[str] = None
     state: dict
+
+
+class DashboardResultItem(BaseModel):
+    test_type: Literal["anxiety", "depression"]
+    status: str
+    total_score: Optional[int] = None
+    level: Optional[str] = None
+    assessed_at: str
+
+
+class DashboardResultsResponse(BaseModel):
+    results: list[DashboardResultItem]
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────
@@ -858,6 +879,73 @@ async def _delete_chat_history_rows(
         _raise_supabase_http_error("delete_chat_history", res)
 
 
+async def _fetch_dashboard_results_for_user(user_id: str) -> list[DashboardResultItem]:
+    headers = _supabase_service_headers()
+    anxiety_url = f"{SUPABASE_URL}/rest/v1/gad7_assessments"
+    depression_url = f"{SUPABASE_URL}/rest/v1/phq9_assessments"
+
+    anxiety_params = {
+        "user_id": f"eq.{user_id}",
+        "select": "status,total_score,anxiety_level,assessed_at",
+        "order": "assessed_at.desc",
+        "limit": "100",
+    }
+    depression_params = {
+        "user_id": f"eq.{user_id}",
+        "select": "status,total_score,depression_level,assessed_at",
+        "order": "assessed_at.desc",
+        "limit": "100",
+    }
+
+    async with httpx.AsyncClient() as client:
+        anxiety_res, depression_res = await asyncio.gather(
+            client.get(anxiety_url, headers=headers, params=anxiety_params, timeout=10.0),
+            client.get(depression_url, headers=headers, params=depression_params, timeout=10.0),
+        )
+
+    if anxiety_res.status_code != 200:
+        _raise_supabase_http_error("fetch_gad7_assessments", anxiety_res)
+    if depression_res.status_code != 200:
+        _raise_supabase_http_error("fetch_phq9_assessments", depression_res)
+
+    merged: list[DashboardResultItem] = []
+
+    for row in anxiety_res.json() if isinstance(anxiety_res.json(), list) else []:
+        if not isinstance(row, dict):
+            continue
+        assessed_at = str(row.get("assessed_at") or "")
+        if not assessed_at:
+            continue
+        merged.append(
+            DashboardResultItem(
+                test_type="anxiety",
+                status=str(row.get("status") or "unknown"),
+                total_score=row.get("total_score"),
+                level=row.get("anxiety_level"),
+                assessed_at=assessed_at,
+            )
+        )
+
+    for row in depression_res.json() if isinstance(depression_res.json(), list) else []:
+        if not isinstance(row, dict):
+            continue
+        assessed_at = str(row.get("assessed_at") or "")
+        if not assessed_at:
+            continue
+        merged.append(
+            DashboardResultItem(
+                test_type="depression",
+                status=str(row.get("status") or "unknown"),
+                total_score=row.get("total_score"),
+                level=row.get("depression_level"),
+                assessed_at=assessed_at,
+            )
+        )
+
+    merged.sort(key=lambda r: r.assessed_at, reverse=True)
+    return merged[:100]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1154,6 +1242,18 @@ async def chat_conversations(user_id: str, mode: Literal["general", "anxiety", "
 
 # ── GAD-7 Protocol ────────────────────────────────────────────────────────
 
+@app.get("/dashboard/results", response_model=DashboardResultsResponse)
+async def dashboard_results(user_id: str):
+    try:
+        results = await _fetch_dashboard_results_for_user(user_id)
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to reach Supabase while loading dashboard results.",
+        )
+    return DashboardResultsResponse(results=results)
+
+
 @app.post("/protocol/gad7/start")
 async def gad7_start(body: GAD7ResetRequest):
     """Start a fresh GAD-7 session and return the first screening question."""
@@ -1168,15 +1268,95 @@ async def gad7_start(body: GAD7ResetRequest):
     )
 
 
+@app.post("/protocol/gad7/bootstrap", response_model=GAD7Response)
+async def gad7_bootstrap(body: ProtocolBootstrapRequest):
+    try:
+        await _delete_chat_history_rows(
+            user_id=body.user_id,
+            mode="anxiety",
+            conversation_id=body.conversation_id,
+        )
+    except Exception as exc:
+        print(f"[GAD7] bootstrap pre-delete warning: {exc}")
+
+    _reset_gad7_session(body.user_id, body.conversation_id)
+    await _delete_gad7_session_row(body.user_id, body.conversation_id)
+    protocol = GAD7Protocol()
+
+    result: dict = {"reply": protocol.get_age_screening(), "completed": False}
+    for answer in [
+        "yes" if body.age_18_plus else "no",
+        "yes" if body.in_crisis else "no",
+        "yes" if body.consent else "no",
+    ]:
+        result = protocol.process_user_input(answer)
+        if result.get("completed"):
+            break
+
+    completed: bool = bool(result.get("completed", False))
+    crisis: bool = bool(result.get("crisis", False))
+    withdrawn: bool = bool(result.get("withdrawn", False))
+    delete_partial: bool = bool(result.get("delete_partial", False))
+    no_result: bool = bool(result.get("no_result", False))
+
+    await _save_gad7_session(body.user_id, body.conversation_id, protocol, completed=completed)
+    post_state = protocol.get_state()
+    terminal_reason: Optional[str] = result.get("terminal_reason") or post_state.get("terminal_reason")
+
+    if completed and not post_state.get("assessment_saved", False):
+        assessment_payload = _build_gad7_assessment_payload(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            protocol=protocol,
+            terminal_reason=terminal_reason,
+            completed=completed,
+            crisis=crisis,
+        )
+        if assessment_payload is not None:
+            saved = await _insert_gad7_assessment(assessment_payload)
+            protocol.assessment_saved = saved
+        else:
+            protocol.assessment_saved = True
+        post_state = protocol.get_state()
+        await _save_gad7_session(body.user_id, body.conversation_id, protocol, completed=completed)
+
+    if delete_partial:
+        try:
+            await _delete_chat_history_rows(
+                user_id=body.user_id,
+                mode="anxiety",
+                conversation_id=body.conversation_id,
+            )
+        except Exception as exc:
+            print(f"[GAD7] failed to delete partial data in bootstrap: {exc}")
+
+    return GAD7Response(
+        reply=result.get("reply", ""),
+        completed=completed,
+        score=result.get("score"),
+        severity=result.get("severity"),
+        crisis=crisis,
+        withdrawn=withdrawn,
+        delete_partial=delete_partial,
+        no_result=no_result,
+        terminal_reason=terminal_reason,
+        state=post_state,
+    )
+
+
 @app.post("/protocol/gad7/respond", response_model=GAD7Response)
 async def gad7_respond(body: GAD7Request):
     # Load persisted state
     protocol = await _load_gad7_session(body.user_id, body.conversation_id)
     pre_state = protocol.get_state()
 
-    # AI classifies user intent; protocol still enforces deterministic state transitions.
-    detected_intent = _classify_gad7_intent_with_ai(body.user_message, pre_state)
-    normalized_input = _map_intent_to_protocol_text(detected_intent, body.user_message)
+    # Screening/consent is deterministic-only (no AI classification).
+    if not pre_state.get("screening_passed", False):
+        detected_intent = "normal"
+        normalized_input = body.user_message
+    else:
+        detected_intent = _classify_gad7_intent_with_ai(body.user_message, pre_state)
+        normalized_input = _map_intent_to_protocol_text(detected_intent, body.user_message)
 
     # Process input through the protocol state machine
     result = protocol.process_user_input(normalized_input)
@@ -1280,13 +1460,94 @@ async def phq9_start(body: GAD7ResetRequest):
     )
 
 
+@app.post("/protocol/phq9/bootstrap", response_model=GAD7Response)
+async def phq9_bootstrap(body: ProtocolBootstrapRequest):
+    try:
+        await _delete_chat_history_rows(
+            user_id=body.user_id,
+            mode="depression",
+            conversation_id=body.conversation_id,
+        )
+    except Exception as exc:
+        print(f"[PHQ9] bootstrap pre-delete warning: {exc}")
+
+    _reset_phq9_session(body.user_id, body.conversation_id)
+    await _delete_phq9_session_row(body.user_id, body.conversation_id)
+    protocol = PHQ9Protocol()
+
+    result: dict = {"reply": protocol.get_age_screening(), "completed": False}
+    for answer in [
+        "yes" if body.age_18_plus else "no",
+        "yes" if body.in_crisis else "no",
+        "yes" if body.consent else "no",
+    ]:
+        result = protocol.process_user_input(answer)
+        if result.get("completed"):
+            break
+
+    completed: bool = bool(result.get("completed", False))
+    crisis: bool = bool(result.get("crisis", False))
+    withdrawn: bool = bool(result.get("withdrawn", False))
+    delete_partial: bool = bool(result.get("delete_partial", False))
+    no_result: bool = bool(result.get("no_result", False))
+
+    await _save_phq9_session(body.user_id, body.conversation_id, protocol, completed=completed)
+    post_state = protocol.get_state()
+    terminal_reason: Optional[str] = result.get("terminal_reason") or post_state.get("terminal_reason")
+
+    if completed and not post_state.get("assessment_saved", False):
+        assessment_payload = _build_phq9_assessment_payload(
+            user_id=body.user_id,
+            conversation_id=body.conversation_id,
+            protocol=protocol,
+            terminal_reason=terminal_reason,
+            completed=completed,
+            crisis=crisis,
+        )
+        if assessment_payload is not None:
+            saved = await _insert_phq9_assessment(assessment_payload)
+            protocol.assessment_saved = saved
+        else:
+            protocol.assessment_saved = True
+        post_state = protocol.get_state()
+        await _save_phq9_session(body.user_id, body.conversation_id, protocol, completed=completed)
+
+    if delete_partial:
+        try:
+            await _delete_chat_history_rows(
+                user_id=body.user_id,
+                mode="depression",
+                conversation_id=body.conversation_id,
+            )
+        except Exception as exc:
+            print(f"[PHQ9] failed to delete partial data in bootstrap: {exc}")
+
+    return GAD7Response(
+        reply=result.get("reply", ""),
+        completed=completed,
+        score=result.get("score"),
+        severity=result.get("severity"),
+        crisis=crisis,
+        withdrawn=withdrawn,
+        delete_partial=delete_partial,
+        no_result=no_result,
+        terminal_reason=terminal_reason,
+        state=post_state,
+    )
+
+
 @app.post("/protocol/phq9/respond", response_model=GAD7Response)
 async def phq9_respond(body: GAD7Request):
     protocol = await _load_phq9_session(body.user_id, body.conversation_id)
     pre_state = protocol.get_state()
 
-    detected_intent = _classify_phq9_intent_with_ai(body.user_message, pre_state)
-    normalized_input = _map_phq9_intent_to_protocol_text(detected_intent, body.user_message)
+    # Screening/consent is deterministic-only (no AI classification).
+    if not pre_state.get("screening_passed", False):
+        detected_intent = "normal"
+        normalized_input = body.user_message
+    else:
+        detected_intent = _classify_phq9_intent_with_ai(body.user_message, pre_state)
+        normalized_input = _map_phq9_intent_to_protocol_text(detected_intent, body.user_message)
     result = protocol.process_user_input(normalized_input)
 
     protocol_reply: str = result.get("reply", "")

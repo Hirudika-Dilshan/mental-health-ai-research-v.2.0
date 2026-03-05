@@ -676,46 +676,25 @@ export default function ChatWorkspace({ mode = "general" }) {
     try {
       const convId = conversationId || "default";
       const isAnxiety = mode === "anxiety";
-      const protocolStartUrl = isAnxiety ? `${API_URL}/protocol/gad7/start` : `${API_URL}/protocol/phq9/start`;
-      const protocolRespondUrl = isAnxiety ? `${API_URL}/protocol/gad7/respond` : `${API_URL}/protocol/phq9/respond`;
+      const protocolBootstrapUrl = isAnxiety
+        ? `${API_URL}/protocol/gad7/bootstrap`
+        : `${API_URL}/protocol/phq9/bootstrap`;
 
-      await fetch(
-        `${API_URL}/chat/history?user_id=${encodeURIComponent(user.user_id)}&mode=${mode}&conversation_id=${encodeURIComponent(convId)}`,
-        { method: "DELETE" },
-      );
-
-      await fetch(protocolStartUrl, {
+      const res = await fetch(protocolBootstrapUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: user.user_id, conversation_id: convId }),
+        body: JSON.stringify({
+          user_id: user.user_id,
+          conversation_id: convId,
+          age_18_plus: anxietyIntake.age_18_plus === "yes",
+          in_crisis: anxietyIntake.in_crisis === "yes",
+          consent: anxietyIntake.consent === "yes",
+        }),
       });
-
-      const answers = [
-        anxietyIntake.age_18_plus,
-        anxietyIntake.in_crisis,
-        anxietyIntake.consent,
-      ];
-
-      let latestReply = "Session started.";
-      let latestAwaitingFrequency = false;
-      let latestCompleted = false;
-
-      for (const answer of answers) {
-        const res = await fetch(protocolRespondUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            user_id: user.user_id,
-            conversation_id: convId,
-            user_message: answer,
-          }),
-        });
-        const data = await res.json();
-        latestReply = res.ok ? data.reply : data.detail || "Failed to initialize anxiety session.";
-        latestAwaitingFrequency = Boolean(data?.state?.awaiting_frequency);
-        latestCompleted = Boolean(data?.completed);
-        if (latestCompleted) break;
-      }
+      const data = await res.json();
+      const latestReply = res.ok ? data.reply : data.detail || "Failed to initialize protocol session.";
+      const latestAwaitingFrequency = Boolean(data?.state?.awaiting_frequency);
+      const latestCompleted = Boolean(data?.completed);
 
       setMessages([{ role: "assistant", content: latestReply }]);
       if (isAnxiety) {
