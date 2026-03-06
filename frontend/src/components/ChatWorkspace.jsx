@@ -247,7 +247,6 @@ export default function ChatWorkspace({ mode = "general" }) {
             const lastAssistant = [...formatted].reverse().find((m) => m.role === "assistant");
             const lower = (lastAssistant?.content || "").toLowerCase();
             const awaiting = Boolean(
-              lower.includes("please choose 1, 2, 3, or 4") ||
               lower.includes("please choose 0, 1, 2, or 3"),
             );
             const inferredReason = inferTerminalReasonFromText(lastAssistant?.content || "");
@@ -936,33 +935,33 @@ export default function ChatWorkspace({ mode = "general" }) {
           )}
           {mode === "anxiety" && anxietyAwaitingFrequency && !anxietySessionLocked && (
             <div className="anxiety-frequency-bar">
+              <button type="button" onClick={() => submitUserText("0")} disabled={loading || loadingHistory || anxietySessionLocked}>
+                0. Not at all
+              </button>
               <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory || anxietySessionLocked}>
-                1. Not at all
+                1. Several days
               </button>
               <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory || anxietySessionLocked}>
-                2. Several days
+                2. More than half the days
               </button>
               <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory || anxietySessionLocked}>
-                3. More than half the days
-              </button>
-              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory || anxietySessionLocked}>
-                4. Nearly every day
+                3. Nearly every day
               </button>
             </div>
           )}
           {mode === "depression" && depressionAwaitingFrequency && !depressionSessionLocked && (
             <div className="anxiety-frequency-bar">
+              <button type="button" onClick={() => submitUserText("0")} disabled={loading || loadingHistory || depressionSessionLocked}>
+                0. Not at all
+              </button>
               <button type="button" onClick={() => submitUserText("1")} disabled={loading || loadingHistory || depressionSessionLocked}>
-                1. Not at all
+                1. Several days
               </button>
               <button type="button" onClick={() => submitUserText("2")} disabled={loading || loadingHistory || depressionSessionLocked}>
-                2. Several days
+                2. More than half the days
               </button>
               <button type="button" onClick={() => submitUserText("3")} disabled={loading || loadingHistory || depressionSessionLocked}>
-                3. More than half the days
-              </button>
-              <button type="button" onClick={() => submitUserText("4")} disabled={loading || loadingHistory || depressionSessionLocked}>
-                4. Nearly every day
+                3. Nearly every day
               </button>
             </div>
           )}

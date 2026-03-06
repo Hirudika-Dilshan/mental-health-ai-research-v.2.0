@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import DepressionTest from "./pages/DepressionTest";
 import GeneralChat from "./pages/GeneralChat";
 import Login from "./pages/Login";
+import ResultsPage from "./pages/ResultsPage";
 import SignUp from "./pages/SignUp";
 
 export default function App() {
@@ -45,6 +46,14 @@ export default function App() {
             element={(
               <ProtectedRoute>
                 <GeneralChat />
+              </ProtectedRoute>
+            )}
+          />
+          <Route
+            path="/results"
+            element={(
+              <ProtectedRoute>
+                <ResultsPage />
               </ProtectedRoute>
             )}
           />

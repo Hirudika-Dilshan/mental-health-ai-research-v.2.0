@@ -111,6 +111,7 @@ Frontend default URL: `http://localhost:5173`
 - `/signup` - Registration page
 - `/login` - Login page
 - `/dashboard` - Main post-login home (action selection + profile)
+- `/results` - Full analytics page with result timeline and score trend charts
 - `/anxiety-test` - Anxiety assessment page (UI scaffold)
 - `/depression-test` - Depression assessment page (UI scaffold)
 - `/general-chat` - General conversation page (UI scaffold)

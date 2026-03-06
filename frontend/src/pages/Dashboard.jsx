@@ -27,6 +27,13 @@ const actions = [
     duration: "Always available",
     cta: "Open Chat",
   },
+  {
+    title: "Results Analytics",
+    description: "See your full score trends with a dedicated timeline and line charts.",
+    to: "/results",
+    duration: "Trends",
+    cta: "View Full Results",
+  },
 ];
 
 export default function Dashboard() {
@@ -195,6 +202,9 @@ export default function Dashboard() {
                 <div className="profile-results">
                   <div className="timeline-header">
                     <span>{results.length} records</span>
+                    <Link to="/results" className="timeline-link">
+                      Open full results
+                    </Link>
                   </div>
                   <div className="result-glance">
                     <ResultChip label="Latest Anxiety" item={latestAnxiety} />

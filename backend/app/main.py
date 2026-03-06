@@ -546,7 +546,7 @@ def _heuristic_gad7_intent(text: str) -> str:
         return "crisis"
     if any(k in value for k in ["stop", "exit", "quit", "end session"]):
         return "withdraw"
-    if value in {"1", "2", "3", "4"}:
+    if value in {"0", "1", "2", "3"}:
         return f"freq_{value}"
     if value in {"yes", "y", "yeah", "yep", "ok", "okay"}:
         return "yes"
@@ -577,10 +577,10 @@ def _map_intent_to_protocol_text(intent: str, raw_text: str) -> str:
     mapping = {
         "yes": "yes",
         "no": "no",
+        "freq_0": "0",
         "freq_1": "1",
         "freq_2": "2",
         "freq_3": "3",
-        "freq_4": "4",
         "skip": "skip",
         "back": "back",
         "meta_count": "how many questions are left?",
@@ -601,10 +601,10 @@ def _is_structured_intent(intent: str) -> bool:
     return intent in {
         "yes",
         "no",
+        "freq_0",
         "freq_1",
         "freq_2",
         "freq_3",
-        "freq_4",
         "skip",
         "back",
         "meta_count",
@@ -625,7 +625,7 @@ def _classify_gad7_intent_with_ai(user_message: str, protocol_state: dict) -> st
     system_prompt = (
         "Classify the user's message into one intent label for a GAD-7 protocol.\n"
         "Allowed labels only:\n"
-        "yes, no, freq_1, freq_2, freq_3, freq_4, skip, back, meta_count, meta_why, meta_what, "
+        "yes, no, freq_0, freq_1, freq_2, freq_3, skip, back, meta_count, meta_why, meta_what, "
         "confused, example, assessment, justification, withdraw, crisis, off_topic, normal.\n"
         "Return JSON only: {\"intent\":\"<label>\"}"
     )
@@ -658,7 +658,7 @@ def _heuristic_phq9_intent(text: str) -> str:
         return "crisis"
     if any(k in value for k in ["stop", "exit", "quit", "end session"]):
         return "withdraw"
-    if value in {"1", "2", "3", "4"}:
+    if value in {"0", "1", "2", "3"}:
         return f"freq_{value}"
     if value in {"yes", "y", "yeah", "yep", "ok", "okay"}:
         return "yes"
@@ -696,10 +696,10 @@ def _map_phq9_intent_to_protocol_text(intent: str, raw_text: str) -> str:
     mapping = {
         "yes": "yes",
         "no": "no",
+        "freq_0": "0",
         "freq_1": "1",
         "freq_2": "2",
         "freq_3": "3",
-        "freq_4": "4",
         "skip": "skip",
         "back": "back",
         "meta_count": "how many questions are left?",
@@ -724,7 +724,7 @@ def _classify_phq9_intent_with_ai(user_message: str, protocol_state: dict) -> st
     system_prompt = (
         "Classify the user's message into one intent label for a PHQ-9 protocol.\n"
         "Allowed labels only:\n"
-        "yes, no, freq_1, freq_2, freq_3, freq_4, skip, back, meta_count, meta_why, meta_what, "
+        "yes, no, freq_0, freq_1, freq_2, freq_3, skip, back, meta_count, meta_why, meta_what, "
         "confused, example, assessment, justification, withdraw, crisis, off_topic, normal.\n"
         "Return JSON only: {\"intent\":\"<label>\"}"
     )
@@ -1539,16 +1539,8 @@ async def phq9_bootstrap(body: ProtocolBootstrapRequest):
 @app.post("/protocol/phq9/respond", response_model=GAD7Response)
 async def phq9_respond(body: GAD7Request):
     protocol = await _load_phq9_session(body.user_id, body.conversation_id)
-    pre_state = protocol.get_state()
-
-    # Screening/consent is deterministic-only (no AI classification).
-    if not pre_state.get("screening_passed", False):
-        detected_intent = "normal"
-        normalized_input = body.user_message
-    else:
-        detected_intent = _classify_phq9_intent_with_ai(body.user_message, pre_state)
-        normalized_input = _map_phq9_intent_to_protocol_text(detected_intent, body.user_message)
-    result = protocol.process_user_input(normalized_input)
+    # PHQ-9 scoring/result must remain deterministic and table-driven.
+    result = protocol.process_user_input(body.user_message)
 
     protocol_reply: str = result.get("reply", "")
     completed: bool = bool(result.get("completed", False))
@@ -1559,21 +1551,7 @@ async def phq9_respond(body: GAD7Request):
     post_state = protocol.get_state()
     no_result: bool = bool(result.get("no_result", False))
     terminal_reason: Optional[str] = result.get("terminal_reason") or post_state.get("terminal_reason")
-    session_key = f"{body.user_id}:{body.conversation_id}"
-    is_locked_frequency_step = bool(post_state.get("awaiting_frequency")) or detected_intent.startswith("freq_")
-
-    if is_locked_frequency_step:
-        final_reply = protocol_reply
-    else:
-        final_reply = _build_phq9_conversational_reply(
-            session_key=session_key,
-            intent=detected_intent,
-            user_message=body.user_message,
-            protocol_reply=protocol_reply,
-            completed=completed,
-            crisis=crisis,
-            withdrawn=withdrawn,
-        )
+    final_reply = protocol_reply
 
     await _save_phq9_session(body.user_id, body.conversation_id, protocol, completed=completed)
 

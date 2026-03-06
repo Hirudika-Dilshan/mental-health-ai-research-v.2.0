@@ -54,3 +54,33 @@ alter table public.phq9_assessments
       total_score is null and depression_level is null
     )
   );
+
+-- Enforce 0-3 per-question scale and valid PHQ-9 total range.
+alter table public.phq9_assessments
+  drop constraint if exists phq9_assessments_score_ranges;
+
+alter table public.phq9_assessments
+  add constraint phq9_assessments_score_ranges check (
+    status <> 'completed'
+    or (
+      q1_score between 0 and 3 and
+      q2_score between 0 and 3 and
+      q3_score between 0 and 3 and
+      q4_score between 0 and 3 and
+      q5_score between 0 and 3 and
+      q6_score between 0 and 3 and
+      q7_score between 0 and 3 and
+      q8_score between 0 and 3 and
+      q9_score between 0 and 3 and
+      total_score between 0 and 27
+    )
+  );
+
+alter table public.phq9_assessments
+  drop constraint if exists phq9_assessments_level_values;
+
+alter table public.phq9_assessments
+  add constraint phq9_assessments_level_values check (
+    depression_level is null
+    or depression_level in ('minimal', 'mild', 'moderate', 'moderately_severe', 'severe')
+  );

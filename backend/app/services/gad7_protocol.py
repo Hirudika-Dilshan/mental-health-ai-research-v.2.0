@@ -9,7 +9,7 @@ class GAD7Protocol:
         1. Ask symptom question (yes/no).
         2a. "No"  → record score 0, advance to next question.
         2b. "Yes" → set awaiting_frequency=True, ask frequency.
-        3. Parse frequency (1-4 / text) → record score 0-3, advance.
+        3. Parse frequency (0-3 / text) → record score 0-3, advance.
     """
 
     QUESTIONS = [
@@ -262,11 +262,11 @@ class GAD7Protocol:
     def get_frequency_question(self) -> str:
         return (
             "Okay, how often have you been bothered by that over the last 2 weeks?\n"
-            "1. Not at all\n"
-            "2. Several days\n"
-            "3. More than half the days\n"
-            "4. Nearly every day\n\n"
-            "Please choose 1, 2, 3, or 4."
+            "0. Not at all\n"
+            "1. Several days\n"
+            "2. More than half the days\n"
+            "3. Nearly every day\n\n"
+            "Please choose 0, 1, 2, or 3."
         )
 
     def get_guardrail_response(self) -> str:
@@ -349,8 +349,8 @@ class GAD7Protocol:
     @classmethod
     def _parse_frequency(cls, text: str) -> Optional[int]:
         value = (text or "").strip().lower()
-        if value in {"1", "2", "3", "4"}:
-            return int(value) - 1
+        if value in {"0", "1", "2", "3"}:
+            return int(value)
         return cls.FREQUENCY_OPTIONS.get(value)
 
     # ------------------------------------------------------------------
@@ -635,7 +635,7 @@ class GAD7Protocol:
                 return {
                     "reply": (
                         f"{self.get_frequency_question()}\n"
-                        "Invalid input. Please choose 1, 2, 3, or 4."
+                        "Invalid input. Please choose 0, 1, 2, or 3."
                     )
                 }
             return self._record_frequency_and_advance(score)

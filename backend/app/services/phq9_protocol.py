@@ -70,6 +70,15 @@ class PHQ9Protocol:
         "nearly every day": 3,
     }
 
+    # PHQ-9 standard severity table.
+    SEVERITY_TABLE = [
+        (0, 4, "minimal"),
+        (5, 9, "mild"),
+        (10, 14, "moderate"),
+        (15, 19, "moderately_severe"),
+        (20, 27, "severe"),
+    ]
+
     CRISIS_KEYWORDS = [
         "suicide",
         "kill myself",
@@ -126,16 +135,43 @@ class PHQ9Protocol:
         self.screening_step = state.get("screening_step", 0)
         self.screening_passed = state.get("screening_passed", False)
         self.consent_given = state.get("consent_given", False)
-        self.responses = state.get("responses", {})
+        self.responses = self._normalize_response_keys(state.get("responses", {}))
         self.awaiting_frequency = state.get("awaiting_frequency", False)
         self.revisiting_skipped = state.get("revisiting_skipped", False)
         self.skipped_queue = state.get("skipped_queue", [])
         self.confusion_count = state.get("confusion_count", 0)
-        self.total_score = state.get("total_score", 0)
+        # Always derive score from responses to keep it deterministic.
+        self.total_score = self._recalculate_total_score()
         self.completed = state.get("completed", False)
         self.terminal_reason = state.get("terminal_reason")
         self.terminal_message = state.get("terminal_message")
         self.assessment_saved = state.get("assessment_saved", False)
+
+    @staticmethod
+    def _normalize_response_keys(raw: Dict) -> Dict[int, Optional[int]]:
+        normalized: Dict[int, Optional[int]] = {}
+        if not isinstance(raw, dict):
+            return normalized
+
+        for key, value in raw.items():
+            try:
+                q_num = int(key)
+            except (TypeError, ValueError):
+                continue
+
+            if value is None:
+                normalized[q_num] = None
+            elif isinstance(value, int):
+                normalized[q_num] = value
+        return normalized
+
+    def _recalculate_total_score(self) -> int:
+        score = 0
+        for value in self.responses.values():
+            if isinstance(value, int) and 0 <= value <= 3:
+                score += value
+        self.total_score = score
+        return score
 
     def _normalize(self, text: str) -> str:
         return (text or "").strip().lower()
@@ -225,11 +261,11 @@ class PHQ9Protocol:
     def get_frequency_question(self) -> str:
         return (
             "Okay, how often have you been bothered by that over the last 2 weeks?\n"
-            "1. Not at all\n"
-            "2. Several days\n"
-            "3. More than half the days\n"
-            "4. Nearly every day\n\n"
-            "Please choose 1, 2, 3, or 4."
+            "0. Not at all\n"
+            "1. Several days\n"
+            "2. More than half the days\n"
+            "3. Nearly every day\n\n"
+            "Please choose 0, 1, 2, or 3."
         )
 
     def get_guardrail_response(self) -> str:
@@ -249,23 +285,36 @@ class PHQ9Protocol:
         return "Of course. We can stop here. Thank you for your time."
 
     def calculate_severity(self) -> str:
-        if self.total_score <= 9:
-            return "minimal_to_mild"
-        if self.total_score <= 19:
-            return "moderate_to_moderately_severe"
+        score = self._recalculate_total_score()
+        for low, high, label in self.SEVERITY_TABLE:
+            if low <= score <= high:
+                return label
         return "severe"
 
     def get_completion_message(self) -> str:
+        score = self._recalculate_total_score()
         severity = self.calculate_severity()
+        severity_ranges = {
+            "minimal": "0-4",
+            "mild": "5-9",
+            "moderate": "10-14",
+            "moderately_severe": "15-19",
+            "severe": "20-27",
+        }
+        range_label = severity_ranges.get(severity, "20-27")
         header = (
             "Thank you for completing the PHQ-9 screening.\n\n"
-            f"Your total score is: {self.total_score} out of 27\n"
-            f"Severity level: {severity.upper()}\n\n"
+            f"Your total score is: {score} out of 27\n"
+            f"Severity level: {severity.upper()} ({range_label})\n\n"
         )
-        if severity == "minimal_to_mild":
-            return header + "Your responses suggest minimal to mild depressive symptoms. This is only a screening result, not a diagnosis."
-        if severity == "moderate_to_moderately_severe":
-            return header + "Your responses suggest moderate to moderately severe depressive symptoms. Please consult a qualified professional for a full assessment."
+        if severity == "minimal":
+            return header + "Your responses suggest minimal depressive symptoms. This is only a screening result, not a diagnosis."
+        if severity == "mild":
+            return header + "Your responses suggest mild depressive symptoms. If these feelings persist, consider consulting a qualified professional."
+        if severity == "moderate":
+            return header + "Your responses suggest moderate depressive symptoms. Please consult a qualified professional for a full assessment."
+        if severity == "moderately_severe":
+            return header + "Your responses suggest moderately severe depressive symptoms. Please consult a qualified professional for a full assessment."
         return (
             header
             + "Your responses suggest severe depressive symptoms. It is very important to speak to a qualified professional soon.\n\n"
@@ -292,22 +341,23 @@ class PHQ9Protocol:
     @classmethod
     def _parse_frequency(cls, text: str) -> Optional[int]:
         value = (text or "").strip().lower()
-        if value in {"1", "2", "3", "4"}:
-            return int(value) - 1
+        if value in {"0", "1", "2", "3"}:
+            return int(value)
         return cls.FREQUENCY_OPTIONS.get(value)
 
     def _record_no_and_advance(self) -> Dict:
+        previous = self.responses.get(self.current_question)
+        if isinstance(previous, int):
+            self.total_score -= previous
         self.responses[self.current_question] = 0
+        self._recalculate_total_score()
         self.awaiting_frequency = False
         self.confusion_count = 0
         return self._advance_to_next()
 
     def _record_frequency_and_advance(self, score: int) -> Dict:
-        previous = self.responses.get(self.current_question)
-        if isinstance(previous, int):
-            self.total_score -= previous
         self.responses[self.current_question] = score
-        self.total_score += score
+        self._recalculate_total_score()
         self.awaiting_frequency = False
         self.confusion_count = 0
         return self._advance_to_next()
@@ -530,10 +580,8 @@ class PHQ9Protocol:
                 return {"reply": f"Sure, let's go back.\n\n{self.get_current_question()}"}
             if self.current_question > 1:
                 prev = self.current_question - 1
-                prev_score = self.responses.get(prev)
-                if isinstance(prev_score, int):
-                    self.total_score -= prev_score
                 self.responses.pop(prev, None)
+                self._recalculate_total_score()
                 self.current_question = prev
                 self.awaiting_frequency = False
                 self.confusion_count = 0
@@ -546,7 +594,7 @@ class PHQ9Protocol:
         if self.awaiting_frequency:
             score = self._parse_frequency(text)
             if score is None:
-                return {"reply": f"{self.get_frequency_question()}\nInvalid input. Please choose 1, 2, 3, or 4."}
+                return {"reply": f"{self.get_frequency_question()}\nInvalid input. Please choose 0, 1, 2, or 3."}
             return self._record_frequency_and_advance(score)
 
         q = self.QUESTIONS[self.current_question - 1]

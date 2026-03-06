@@ -253,6 +253,17 @@
   font-weight: 600;
 }
 
+.timeline-link {
+  color: #0f5bc5;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.timeline-link:hover {
+  text-decoration: underline;
+}
+
 .result-glance {
   margin-top: 10px;
   display: grid;
