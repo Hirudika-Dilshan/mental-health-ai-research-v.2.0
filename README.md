@@ -78,8 +78,9 @@ cd backend
 python -m venv .venv
 # Windows PowerShell
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 2. Start frontend
@@ -121,6 +122,7 @@ Frontend default URL: `http://localhost:5173`
 - This is a research prototype and not production-hardened.
 - CORS is restricted to `FRONTEND_URL` from backend env.
 - If you get `Cannot reach Supabase` / `502`, verify `SUPABASE_URL` exactly matches your Supabase project URL from `Settings -> API`.
+- If you see `Fatal error in launcher` or `No Python at ...`, your virtual environment likely points to an old path. Recreate it in `backend/` (`Remove-Item -Recurse -Force .venv`, then `python -m venv .venv` and reinstall requirements).
 
 ## Supabase Chat Table
 

@@ -100,6 +100,25 @@ export default function Dashboard() {
     () => results.find((r) => r.test_type === "depression" && r.status === "completed") || null,
     [results],
   );
+  const metrics = useMemo(() => {
+    const total = results.length;
+    const completedItems = results.filter((item) => item.status === "completed");
+    const completed = completedItems.length;
+    const crisisTerminated = results.filter((item) => item.status === "crisis_terminated").length;
+    const last30DaysCutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+    const last30Days = results.filter((item) => toTimestamp(item.assessed_at) >= last30DaysCutoff).length;
+    const anxietyScores = completedItems.filter((item) => item.test_type === "anxiety");
+    const depressionScores = completedItems.filter((item) => item.test_type === "depression");
+
+    return {
+      total,
+      completionRate: total > 0 ? Math.round((completed / total) * 100) : null,
+      crisisTerminated,
+      last30Days,
+      avgAnxiety: computeAverageScore(anxietyScores),
+      avgDepression: computeAverageScore(depressionScores),
+    };
+  }, [results]);
 
   return (
     <div className="dashboard-page">
@@ -181,6 +200,38 @@ export default function Dashboard() {
                     <ResultChip label="Latest Anxiety" item={latestAnxiety} />
                     <ResultChip label="Latest Depression" item={latestDepression} />
                   </div>
+                  <div className="research-metrics" aria-label="Research snapshot">
+                    <MetricCard
+                      label="Total Sessions"
+                      value={metrics.total}
+                      hint="All recorded outcomes"
+                    />
+                    <MetricCard
+                      label="Completion Rate"
+                      value={metrics.completionRate === null ? "-" : `${metrics.completionRate}%`}
+                      hint="Completed / all outcomes"
+                    />
+                    <MetricCard
+                      label="Crisis Terminations"
+                      value={metrics.crisisTerminated}
+                      hint="Sessions ended for safety"
+                    />
+                    <MetricCard
+                      label="Last 30 Days"
+                      value={metrics.last30Days}
+                      hint="Recent recorded outcomes"
+                    />
+                    <MetricCard
+                      label="Avg Anxiety Score"
+                      value={metrics.avgAnxiety ?? "-"}
+                      hint="Completed anxiety sessions"
+                    />
+                    <MetricCard
+                      label="Avg Depression Score"
+                      value={metrics.avgDepression ?? "-"}
+                      hint="Completed depression sessions"
+                    />
+                  </div>
 
                   {resultsLoading && <p className="timeline-msg">Loading timeline...</p>}
                   {!resultsLoading && resultsError && <p className="timeline-msg error">{resultsError}</p>}
@@ -239,6 +290,31 @@ function ResultChip({ label, item }) {
       <strong>{item ? `${item.total_score ?? "-"} (${item.level || "-"})` : "No data"}</strong>
     </div>
   );
+}
+
+function MetricCard({ label, value, hint }) {
+  return (
+    <div className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{hint}</p>
+    </div>
+  );
+}
+
+function computeAverageScore(items) {
+  const values = items
+    .map((item) => item.total_score)
+    .filter((score) => Number.isFinite(score));
+
+  if (values.length === 0) return null;
+  const avg = values.reduce((sum, score) => sum + score, 0) / values.length;
+  return Number(avg.toFixed(1));
+}
+
+function toTimestamp(value) {
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : 0;
 }
 
 function formatDate(value) {
